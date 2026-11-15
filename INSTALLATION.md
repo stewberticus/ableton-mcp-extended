@@ -9,12 +9,12 @@
 
 Before we start, make sure you have:
 
-- [ ] **Ableton Live 11 or newer** (any edition - Intro, Standard, or Suite)
+- [ ] **Ableton Live 11 or newer** (any edition - Intro, Standard, or Suite). Creating clips directly in the arrangement (`create_arrangement_midi_clip`, `create_arrangement_audio_clip`) relies on Track methods from Live 12's API; on older versions those two tools return an error and everything else still works.
 - [ ] **Python 3.10 or higher** ([Download here](https://www.python.org/downloads/))
 - [ ] **Git** command-line tool.
 - [ ] **Claude Desktop** or **Cursor IDE** ([Claude](https://claude.ai/download) | [Cursor](https://cursor.sh/)) | **Gemini CLI** works, but I've tested it and it's nowhere as good as the previous.
 - [ ] **15 minutes** of uninterrupted time
-- [ ] **Administrator privileges** on your computer
+- [ ] Permission to install Python packages (no administrator rights are needed for the Remote Script: it goes in your User Library)
 
 ---
 
@@ -65,15 +65,26 @@ C:\Users\[YourUsername]\Documents\Ableton\User Library\Remote Scripts\
 
 #### 🍎 macOS
 ```
-~/Library/Preferences/Ableton/Live [Version]/User Remote Scripts/
+~/Music/Ableton/User Library/Remote Scripts/
 ```
 **Quick way to find it:**
 1. Open **Finder**
 2. Press **Cmd + Shift + G**
-3. Paste: `~/Library/Preferences/Ableton/`
-4. Navigate to your Live version folder, then `User Remote Scripts`
+3. Paste: `~/Music/Ableton/User Library/Remote Scripts`
+
+(If you moved your User Library, use its location instead; Live shows it under Settings > Library.)
 
 ### Install the Main Remote Script
+
+**macOS (and Windows with Git Bash):** run the installer from the repo folder. It copies the script into `User Library/Remote Scripts/AbletonMCP`, backs up any previous copy, and clears Live's cached bytecode:
+
+```bash
+scripts/install_remote_script.sh
+```
+
+Run it again after every `git pull`, then restart Live. `scripts/install_remote_script.sh --check` tells you whether the installed copy is current, and `--dest "<folder>"` installs into a different `Remote Scripts` folder.
+
+**By hand:**
 
 1. **Create folder:** In your Remote Scripts directory, create a new folder called `AbletonMCP`
 2. **Copy file:** Copy `AbletonMCP_Remote_Script/__init__.py` into the `AbletonMCP` folder
@@ -116,7 +127,7 @@ Choose your preferred AI assistant:
 1. **Open Claude Desktop**
 2. Go to **Claude** → **Settings** → **Developer**
 3. Click **"Edit Config"**
-4. **Replace the entire content** with:
+4. **Add an `AbletonMCP` entry** inside `"mcpServers"`. Keep any servers already listed there: replacing the whole file would remove them. If the file is empty, use:
 
 ```json
 {
@@ -131,7 +142,7 @@ Choose your preferred AI assistant:
 }
 ```
 
-5. **Update the path:** Replace `C:\\path\\to\\ableton-mcp-extended` with your actual installation path
+5. **Update the path:** Replace `C:\\path\\to\\ableton-mcp-extended` with your actual installation path. Use the same Python you installed the package with (for a virtual environment, its `python` inside `.venv/bin/` or `.venv\\Scripts\\`).
 6. **Save** and **restart Claude Desktop**
 
 #### 🔍 Finding Your Installation Path
@@ -175,7 +186,7 @@ echo $PWD/MCP_Server/server.py
 Look for a **🔨 hammer icon** in the chat interface - this indicates MCP tools are loaded.
 
 **For Cursor:**
-You'll see a green dot next to the MCP server icon, and a message saying "40 tools enabled".
+You'll see a green dot next to the MCP server icon and the number of tools enabled (about 80; see [docs/TOOLS.md](docs/TOOLS.md)).
 
 You might have to restart your AI assistant in order for changes to impact.
 
