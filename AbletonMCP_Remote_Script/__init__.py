@@ -341,7 +341,8 @@ class AbletonMCP(ControlSurface):
                             ci = params.get("clip_index", 0)
                             prop = params.get("property", "")
                             val = params.get("value", None)
-                            result = self._set_arrangement_clip_property(ti, ci, prop, val)
+                            cn = params.get("clip_name", None)
+                            result = self._set_arrangement_clip_property(ti, ci, prop, val, cn)
                         elif command_type == "set_view":
                             vn = params.get("view_name", "Arranger")
                             result = self._set_view(vn)
@@ -354,7 +355,8 @@ class AbletonMCP(ControlSurface):
                             ci = params.get("clip_index", 0)
                             action = params.get("action", "create")
                             pn = params.get("parameter_name", "")
-                            result = self._manage_clip_automation(ti, ci, action, pn)
+                            cn = params.get("clip_name", None)
+                            result = self._manage_clip_automation(ti, ci, action, pn, cn)
                         elif command_type == "add_notes_to_arrangement_clip":
                             ti = params.get("track_index", 0)
                             ci = params.get("clip_index", 0)
@@ -1422,7 +1424,8 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error deleting arrangement clip: " + str(e))
             raise
 
-    def _set_arrangement_clip_property(self, track_index, clip_index, property_name, value):
+    def _set_arrangement_clip_property(self, track_index, clip_index, property_name, value,
+                                       clip_name=None):
         """Set a property on an arrangement clip."""
         try:
             ALLOWED = ("name", "muted", "color", "looping", "loop_start", "loop_end",
@@ -1430,7 +1433,7 @@ class AbletonMCP(ControlSurface):
             if property_name not in ALLOWED:
                 raise ValueError("Property '{0}' not allowed. Allowed: {1}".format(
                     property_name, ", ".join(ALLOWED)))
-            track, clip = self._resolve_arrangement_clip(track_index, clip_index)
+            track, clip = self._resolve_arrangement_clip(track_index, clip_index, clip_name)
             setattr(clip, property_name, value)
             return {"property": property_name, "value": getattr(clip, property_name)}
         except Exception as e:
@@ -1478,10 +1481,11 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error controlling arrangement view: " + str(e))
             raise
 
-    def _manage_clip_automation(self, track_index, clip_index, action, parameter_name=""):
+    def _manage_clip_automation(self, track_index, clip_index, action, parameter_name="",
+                                clip_name=None):
         """Create or clear automation envelopes."""
         try:
-            track, clip = self._resolve_arrangement_clip(track_index, clip_index)
+            track, clip = self._resolve_arrangement_clip(track_index, clip_index, clip_name)
             if action == "clear_all":
                 clip.clear_all_envelopes()
                 return {"action": "clear_all", "done": True}

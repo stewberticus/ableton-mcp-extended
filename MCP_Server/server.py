@@ -1610,12 +1610,15 @@ def set_arrangement_clip_property(
         changes = []
         for prop_name, value in props.items():
             if value is not None and value != "":
-                ableton.send_command("set_arrangement_clip_property", {
+                cmd = {
                     "track_index": ti,
                     "clip_index": ci,
                     "property": prop_name,
                     "value": value,
-                })
+                }
+                if clip_name:
+                    cmd["clip_name"] = clip_name
+                ableton.send_command("set_arrangement_clip_property", cmd)
                 changes.append(f"{prop_name}={value}")
 
         if not changes:
@@ -1689,16 +1692,20 @@ def manage_clip_automation(
         ableton = get_ableton_connection()
         ti = _to_zero_based(track_index, "track_index")
         ci = _to_zero_based(clip_index, "clip_index") if clip_index > 0 else 0
-        result = ableton.send_command("manage_clip_automation", {
+        cmd = {
             "track_index": ti,
             "clip_index": ci,
             "action": action,
             "parameter_name": parameter_name,
-        })
+        }
+        if clip_name:
+            cmd["clip_name"] = clip_name
+        result = ableton.send_command("manage_clip_automation", cmd)
 
+        ref = f"'{clip_name}'" if clip_name else f"clip {clip_index}"
         if action == "clear_all":
-            return f"Cleared all automation on clip {clip_index}, track {track_index}"
-        return f"Automation {action}: {parameter_name} on clip {clip_index}, track {track_index}"
+            return f"Cleared all automation on {ref}, track {track_index}"
+        return f"Automation {action}: {parameter_name} on {ref}, track {track_index}"
     except Exception as e:
         logger.error(f"Error managing clip automation: {str(e)}")
         return f"Error managing clip automation: {str(e)}"
