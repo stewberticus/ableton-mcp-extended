@@ -99,9 +99,9 @@ def main():
 
     # Step 5: Name the clip
     print("5. Naming clip 'Backbeat'...")
-    send_command('set_arrangement_clip_property', {
-        'track_index': 0, 'clip_index': 0,
-        'property': 'name', 'value': 'Backbeat',
+    send_command('set_clip_properties', {
+        'track_index': 0, 'clip_index': 0, 'arrangement': True,
+        'properties': {'name': 'Backbeat'},
     })
 
     # Step 6: Verify
