@@ -275,6 +275,16 @@ def _optional_to_zero_based(index: int, field_name: str = "index") -> int | None
     return index - 1
 
 
+def _track_target_index(track_index: int, track_type: str = "track") -> int:
+    """0-based index for a session/return track; master ignores the index."""
+    track_type = (track_type or "track").lower()
+    if track_type not in ("track", "return", "master"):
+        raise ValueError("track_type must be 'track', 'return' or 'master'")
+    if track_type == "master":
+        return 0
+    return _to_zero_based(track_index, "track_index")
+
+
 # Parameter normalization utilities
 
 
@@ -447,17 +457,18 @@ def get_session_info(ctx: Context) -> str:
         return f"Error getting session info: {str(e)}"
 
 @mcp.tool()
-def get_track_info(ctx: Context, track_index: int) -> str:
+def get_track_info(ctx: Context, track_index: int, track_type: str = "track") -> str:
     """
     Get detailed information about a specific track in Ableton.
 
     Parameters:
     - track_index: Track number (1-based).
+    - track_type: "track" (default), "return" (1 = return A) or "master".
     """
     try:
         ableton = get_ableton_connection()
-        ti = _to_zero_based(track_index, "track_index")
-        result = ableton.send_command("get_track_info", {"track_index": ti})
+        ti = _track_target_index(track_index, track_type)
+        result = ableton.send_command("get_track_info", {"track_index": ti, "track_type": track_type})
         return json.dumps(result, indent=2)
     except Exception as e:
         logger.error(f"Error getting track info from Ableton: {str(e)}")
@@ -516,40 +527,51 @@ def set_track_name(ctx: Context, track_index: int, name: str) -> str:
         return f"Error setting track name: {str(e)}"
 
 
-@mcp.tool()
-def get_track_volume(ctx: Context, track_index: int) -> str:
-    """Get the current fader volume and panning for a track.
+# ── Mixer tools ───────────────────────────────────────────────────
 
-    Returns the raw normalized value, its min/max range, and the panning.
-    Volume 0.85 = 0 dB unity gain. Use this before set_track_volume to
-    understand the current state.
+_TRACK_TYPES = ("track", "return", "master")
+
+
+def _mixer_target(track_index: int, track_type: str) -> Dict[str, Any]:
+    """Params for a mixer command. Master ignores track_index."""
+    track_type = (track_type or "track").lower()
+    if track_type not in _TRACK_TYPES:
+        raise ValueError(f"track_type must be one of {', '.join(_TRACK_TYPES)}")
+    if track_type == "master":
+        return {"track_index": 0, "track_type": "master"}
+    return {"track_index": _to_zero_based(track_index, "track_index"), "track_type": track_type}
+
+
+def _pan_label(pan: float) -> str:
+    return "center" if abs(pan) < 0.01 else f"{abs(pan):.2f} {'L' if pan < 0 else 'R'}"
+
+
+_TRACK_TYPE_DOC = """
+    - track_type: "track" (default), "return" (track_index counts return
+      tracks: 1 = A, 2 = B, ...) or "master" (track_index ignored). For
+      backwards compatibility, a "track" index past the last session track
+      addresses the return tracks in order."""
+
+
+@mcp.tool()
+def get_track_volume(ctx: Context, track_index: int = 1, track_type: str = "track") -> str:
+    """Get the current fader volume (with Live's dB readout) and panning for a track.
 
     Parameters:
-    - track_index: Track number (1-based). Return tracks come after session tracks.
+    - track_index: Track number (1-based).
+    - track_type: "track", "return" or "master".
     """
     try:
         ableton = get_ableton_connection()
-        ti = _to_zero_based(track_index, "track_index")
-        result = ableton.send_command("get_track_volume", {"track_index": ti})
+        result = ableton.send_command("get_track_volume", _mixer_target(track_index, track_type))
         vol = result.get("volume", 0)
         pan = result.get("panning", 0)
-        name = result.get("track_name", "?")
-        vol_min = result.get("volume_min", 0)
-        vol_max = result.get("volume_max", 1)
-        # Approximate dB: unity is at 0.85 normalized
-        unity = 0.85
-        if vol > 0:
-            import math
-            db_approx = 20 * math.log10(vol / unity) if vol > 0 else -float('inf')
-            db_str = f"{db_approx:+.1f} dB" if vol > 0 else "-inf dB"
-        else:
-            db_str = "-inf dB"
-        pan_str = "center" if abs(pan) < 0.01 else (f"{abs(pan):.2f} {'L' if pan < 0 else 'R'}")
+        db_str = result.get("volume_display") or f"{vol:.4f}"
         return (
-            f"Track '{name}':\n"
-            f"  Volume: {vol:.4f} (range {vol_min:.2f}–{vol_max:.2f}) ≈ {db_str}\n"
-            f"  Panning: {pan:.4f} ({pan_str})\n"
-            f"  Unity gain (0 dB) = 0.85"
+            f"Track '{result.get('track_name', '?')}':\n"
+            f"  Volume: {vol:.4f} normalized ({db_str})\n"
+            f"  Panning: {pan:.4f} ({_pan_label(pan)})\n"
+            f"  Unity gain (0 dB) = 0.85 normalized"
         )
     except Exception as e:
         logger.error(f"Error getting track volume: {str(e)}")
@@ -557,61 +579,183 @@ def get_track_volume(ctx: Context, track_index: int) -> str:
 
 
 @mcp.tool()
-def set_track_volume(ctx: Context, track_index: int, volume: float) -> str:
-    """Set the mixer fader volume for a track directly.
+def set_track_volume(ctx: Context, track_index: int = 1, volume: float = 0.85,
+                     track_type: str = "track") -> str:
+    """Set the mixer fader volume for a track, return track or the master.
 
-    This controls the actual track fader, not any device parameter.
-
-    Volume scale (normalized):
-      0.0   = silence
-      0.85  = 0 dB (unity gain, Ableton's default fader position)
-      1.0   = maximum (~+6 dB)
+    Volume scale (normalized, Live's fader curve):
+      0.0  = -inf dB (silence)
+      0.85 = 0 dB (unity gain, Ableton's default fader position)
+      1.0  = +6 dB (maximum)
+    The reply includes Live's own dB readout for the new position.
 
     Parameters:
-    - track_index: Track number (1-based). Return tracks come after session tracks.
-    - volume: Normalized volume 0.0–1.0. Use 0.85 for unity (0 dB).
+    - track_index: Track number (1-based).
+    - volume: Normalized volume 0.0-1.0. Use 0.85 for unity (0 dB).
+    - track_type: "track", "return" or "master".
     """
     try:
         ableton = get_ableton_connection()
-        ti = _to_zero_based(track_index, "track_index")
-        result = ableton.send_command("set_track_volume", {
-            "track_index": ti,
-            "volume": volume,
-        })
-        name = result.get("track_name", "?")
+        params = _mixer_target(track_index, track_type)
+        params["volume"] = volume
+        result = ableton.send_command("set_track_volume", params)
         vol = result.get("volume", volume)
-        import math
-        unity = 0.85
-        db_str = f"{20 * math.log10(vol / unity):+.1f} dB" if vol > 0 else "-inf dB"
-        return f"Set '{name}' fader to {vol:.4f} (≈ {db_str})"
+        db_str = result.get("volume_display") or f"{vol:.4f}"
+        return f"Set '{result.get('track_name', '?')}' fader to {vol:.4f} ({db_str})"
     except Exception as e:
         logger.error(f"Error setting track volume: {str(e)}")
         return f"Error setting track volume: {str(e)}"
 
 
 @mcp.tool()
-def set_track_panning(ctx: Context, track_index: int, panning: float) -> str:
-    """Set the mixer panning for a track.
+def set_track_panning(ctx: Context, track_index: int = 1, panning: float = 0.0,
+                      track_type: str = "track") -> str:
+    """Set the mixer panning for a track, return track or the master.
 
     Parameters:
     - track_index: Track number (1-based).
     - panning: -1.0 = full left, 0.0 = center, +1.0 = full right.
+    - track_type: "track", "return" or "master".
     """
     try:
         ableton = get_ableton_connection()
-        ti = _to_zero_based(track_index, "track_index")
-        result = ableton.send_command("set_track_panning", {
-            "track_index": ti,
-            "panning": panning,
-        })
-        name = result.get("track_name", "?")
+        params = _mixer_target(track_index, track_type)
+        params["panning"] = panning
+        result = ableton.send_command("set_track_panning", params)
         pan = result.get("panning", panning)
-        pan_str = "center" if abs(pan) < 0.01 else (f"{abs(pan):.2f} {'L' if pan < 0 else 'R'}")
-        return f"Set '{name}' panning to {pan:.4f} ({pan_str})"
+        return f"Set '{result.get('track_name', '?')}' panning to {pan:.4f} ({_pan_label(pan)})"
     except Exception as e:
         logger.error(f"Error setting track panning: {str(e)}")
         return f"Error setting track panning: {str(e)}"
 
+
+@mcp.tool()
+def set_track_mute(ctx: Context, track_index: int, mute: bool = True,
+                   track_type: str = "track") -> str:
+    """Mute or unmute a track (track activator off/on).
+
+    Parameters:
+    - track_index: Track number (1-based).
+    - mute: True to mute, False to unmute.
+    - track_type: "track" or "return".
+    """
+    try:
+        ableton = get_ableton_connection()
+        params = _mixer_target(track_index, track_type)
+        params["mute"] = mute
+        result = ableton.send_command("set_track_mute", params)
+        state = "muted" if result.get("mute", mute) else "unmuted"
+        return f"'{result.get('track_name', '?')}' {state}"
+    except Exception as e:
+        logger.error(f"Error setting track mute: {str(e)}")
+        return f"Error setting track mute: {str(e)}"
+
+
+@mcp.tool()
+def set_track_solo(ctx: Context, track_index: int, solo: bool = True,
+                   exclusive: bool = False, track_type: str = "track") -> str:
+    """Solo or unsolo a track.
+
+    Parameters:
+    - track_index: Track number (1-based).
+    - solo: True to solo, False to unsolo.
+    - exclusive: If True, unsolo every other track first.
+    - track_type: "track" or "return".
+    """
+    try:
+        ableton = get_ableton_connection()
+        params = _mixer_target(track_index, track_type)
+        params.update({"solo": solo, "exclusive": exclusive})
+        result = ableton.send_command("set_track_solo", params)
+        state = "soloed" if result.get("solo", solo) else "unsoloed"
+        return f"'{result.get('track_name', '?')}' {state}"
+    except Exception as e:
+        logger.error(f"Error setting track solo: {str(e)}")
+        return f"Error setting track solo: {str(e)}"
+
+
+@mcp.tool()
+def set_track_arm(ctx: Context, track_index: int, arm: bool = True) -> str:
+    """Arm or disarm a session track for recording.
+
+    Parameters:
+    - track_index: Track number (1-based). Group tracks cannot be armed.
+    - arm: True to arm, False to disarm.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_track_arm", {
+            "track_index": _to_zero_based(track_index, "track_index"),
+            "arm": arm,
+        })
+        state = "armed" if result.get("arm", arm) else "disarmed"
+        return f"'{result.get('track_name', '?')}' {state}"
+    except Exception as e:
+        logger.error(f"Error setting track arm: {str(e)}")
+        return f"Error setting track arm: {str(e)}"
+
+
+@mcp.tool()
+def set_track_send(ctx: Context, track_index: int, send: str = "A", level: float = 0.0,
+                   track_type: str = "track") -> str:
+    """Set how much of a track is sent to a return track (reverb/delay buses).
+
+    Parameters:
+    - track_index: Track number (1-based).
+    - send: Which send: a letter ("A", "B", ...), a 1-based number ("1"), or
+      the return track's name.
+    - level: Normalized 0.0 (-inf dB) to 1.0 (0 dB). Reply includes Live's dB readout.
+    - track_type: "track" or "return" (returns can send to later returns if
+      enabled in Live).
+    """
+    try:
+        ableton = get_ableton_connection()
+        send_index = _resolve_send_index(ableton, send)
+        params = _mixer_target(track_index, track_type)
+        params.update({"send_index": send_index, "value": level})
+        result = ableton.send_command("set_track_send", params)
+        return (f"Set '{result.get('track_name', '?')}' send to "
+                f"'{result.get('return_track', send)}' at {result.get('value', level):.3f} "
+                f"({result.get('display', '')})")
+    except Exception as e:
+        logger.error(f"Error setting track send: {str(e)}")
+        return f"Error setting track send: {str(e)}"
+
+
+def _resolve_send_index(ableton: "AbletonConnection", send: Union[str, int]) -> int:
+    """Map "A"/"B"/..., "1"/"2"/... or a return track name to a 0-based send index."""
+    text = str(send).strip()
+    if text.isdigit():
+        return _to_zero_based(int(text), "send")
+    if len(text) == 1 and text.isalpha():
+        return ord(text.upper()) - ord("A")
+    info = ableton.send_command("get_session_info")
+    names = [rt.get("name", "") for rt in info.get("return_tracks", [])]
+    lowered = [n.lower() for n in names]
+    if text.lower() in lowered:
+        return lowered.index(text.lower())
+    # Live names returns "A-Reverb"; allow matching the part after the letter.
+    for i, n in enumerate(lowered):
+        if n.split("-", 1)[-1] == text.lower():
+            return i
+    raise ValueError(f"No return track called '{send}'. Return tracks: {', '.join(names) or 'none'}")
+
+
+@mcp.tool()
+def create_return_track(ctx: Context) -> str:
+    """Add a new return track (for a shared reverb or delay bus).
+
+    Then load an effect onto it with load_instrument_or_effect(...,
+    track_type="return") and feed it with set_track_send.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("create_return_track")
+        return (f"Created return track '{result.get('name', '?')}' "
+                f"(return {result.get('index', 0) + 1})")
+    except Exception as e:
+        logger.error(f"Error creating return track: {str(e)}")
+        return f"Error creating return track: {str(e)}"
 
 @mcp.tool()
 def create_clip(ctx: Context, track_index: int, clip_index: int, length: float = 4.0) -> str:
@@ -935,19 +1079,20 @@ def set_tempo(ctx: Context, tempo: float) -> str:
 
 
 @mcp.tool()
-def load_instrument_or_effect(ctx: Context, track_index: int, uri: str) -> str:
+def load_instrument_or_effect(ctx: Context, track_index: int, uri: str, track_type: str = "track") -> str:
     """
     Load an instrument or effect onto a track using its URI.
 
     Parameters:
     - track_index: Track number (1-based).
+    - track_type: "track" (default), "return" (1 = return A) or "master".
     - uri: The URI of the instrument or effect to load (e.g., 'query:Synths#Instrument%20Rack:Bass:FileId_5116').
     """
     try:
         ableton = get_ableton_connection()
-        ti = _to_zero_based(track_index, "track_index")
+        ti = _track_target_index(track_index, track_type)
         result = ableton.send_command("load_browser_item", {
-            "track_index": ti,
+            "track_index": ti, "track_type": track_type,
             "item_uri": uri
         })
         
@@ -1344,11 +1489,13 @@ def load_external_plugin(
     plugin_name: str,
     exact_match: bool = False,
     refresh_cache: bool = False,
+    track_type: str = "track",
 ) -> str:
     """Load an external plugin onto a track by plugin name (no URI required).
 
     Parameters:
     - track_index: Track number (1-based).
+    - track_type: "track" (default), "return" (1 = return A) or "master".
     - plugin_name: Plugin name to match (e.g., "FabFilter Pro-Q 3").
     - exact_match: If True, require exact normalized name match.
     - refresh_cache: If True, force a rescan before matching.
@@ -1358,7 +1505,7 @@ def load_external_plugin(
             return "Error: plugin_name is required."
 
         ableton = get_ableton_connection()
-        ti = _to_zero_based(track_index, "track_index")
+        ti = _track_target_index(track_index, track_type)
         plugins = _get_cached_external_plugins(ableton, force_refresh=refresh_cache)
 
         scored = []
@@ -1389,7 +1536,7 @@ def load_external_plugin(
 
         chosen = top_plugins[0]
         result = ableton.send_command("load_browser_item", {
-            "track_index": ti,
+            "track_index": ti, "track_type": track_type,
             "item_uri": chosen.get("uri"),
         })
 
@@ -1404,22 +1551,24 @@ def load_external_plugin(
 
 
 @mcp.tool()
-def load_drum_kit(ctx: Context, track_index: int, rack_uri: str, kit_path: str) -> str:
+def load_drum_kit(ctx: Context, track_index: int, rack_uri: str, kit_path: str,
+                  track_type: str = "track") -> str:
     """
     Load a drum rack and then load a specific drum kit into it.
 
     Parameters:
     - track_index: Track number (1-based).
+    - track_type: "track" (default), "return" (1 = return A) or "master".
     - rack_uri: The URI of the drum rack to load (e.g., 'Drums/Drum Rack').
     - kit_path: Path to the drum kit inside the browser (e.g., 'drums/acoustic/kit1').
     """
     try:
         ableton = get_ableton_connection()
-        ti = _to_zero_based(track_index, "track_index")
+        ti = _track_target_index(track_index, track_type)
 
         # Step 1: Load the drum rack
         result = ableton.send_command("load_browser_item", {
-            "track_index": ti,
+            "track_index": ti, "track_type": track_type,
             "item_uri": rack_uri
         })
         
@@ -1444,7 +1593,7 @@ def load_drum_kit(ctx: Context, track_index: int, rack_uri: str, kit_path: str) 
         # Step 4: Load the first loadable kit
         kit_uri = loadable_kits[0].get("uri")
         load_result = ableton.send_command("load_browser_item", {
-            "track_index": ti,
+            "track_index": ti, "track_type": track_type,
             "item_uri": kit_uri
         })
         
@@ -1981,6 +2130,7 @@ def manage_clip_automation(
 def get_device_parameters(
     ctx: Context,
     track_index: int,
+    track_type: str = "track",
     device_index: int = 1,
     chain_index: int = 0,
     category: str = "",
@@ -1990,6 +2140,7 @@ def get_device_parameters(
 
     Parameters:
     - track_index: Track number (1-based).
+    - track_type: "track" (default), "return" (1 = return A) or "master".
     - device_index: Device number on the track (1-based, default 1).
     - chain_index: Chain number inside a rack (1-based, 0 = no chain).
     - category: Filter by category name (returns detail for that category).
@@ -2000,11 +2151,11 @@ def get_device_parameters(
     """
     try:
         ableton = get_ableton_connection()
-        ti = _to_zero_based(track_index, "track_index")
+        ti = _track_target_index(track_index, track_type)
         di = _to_zero_based(device_index, "device_index")
         ci = _optional_to_zero_based(chain_index, "chain_index")
         result = ableton.send_command("get_device_parameters", {
-            "track_index": ti,
+            "track_index": ti, "track_type": track_type,
             "device_index": di,
             "chain_index": ci,
             "show_all": True,  # Always get full list from RS, group MCP-side
@@ -2070,6 +2221,7 @@ def get_device_parameters(
 def set_device_parameter(
     ctx: Context,
     track_index: int,
+    track_type: str = "track",
     device_index: int = 1,
     chain_index: int = 0,
     parameter_name: str = "",
@@ -2080,6 +2232,7 @@ def set_device_parameter(
 
     Parameters:
     - track_index: Track number (1-based).
+    - track_type: "track" (default), "return" (1 = return A) or "master".
     - device_index: Device number (1-based, default 1).
     - chain_index: Chain number inside a rack (1-based, 0 = no chain).
     - parameter_name: Parameter name, friendly alias, or partial match.
@@ -2088,7 +2241,7 @@ def set_device_parameter(
     """
     try:
         ableton = get_ableton_connection()
-        ti = _to_zero_based(track_index, "track_index")
+        ti = _track_target_index(track_index, track_type)
         di = _to_zero_based(device_index, "device_index")
         ci = _optional_to_zero_based(chain_index, "chain_index")
         pi = _optional_to_zero_based(parameter_index, "parameter_index")
@@ -2099,7 +2252,7 @@ def set_device_parameter(
         if parameter_name:
             # First get device name for alias resolution
             info = ableton.send_command("get_device_parameters", {
-                "track_index": ti,
+                "track_index": ti, "track_type": track_type,
                 "device_index": di,
                 "chain_index": ci,
                 "show_all": False,
@@ -2111,7 +2264,7 @@ def set_device_parameter(
                 resolved_name = real_name
 
         result = ableton.send_command("set_device_parameter", {
-            "track_index": ti,
+            "track_index": ti, "track_type": track_type,
             "device_index": di,
             "chain_index": ci,
             "parameter_name": resolved_name if resolved_name else None,
@@ -2142,16 +2295,18 @@ def enable_device(
     device_index: int = 0,
     device_name: str = "",
     chain_index: int = 0,
+    track_type: str = "track",
 ) -> str:
     """Enable (activate) a device on a track.
 
     Parameters:
     - track_index: Track number (1-based).
+    - track_type: "track" (default), "return" (1 = return A) or "master".
     - device_index: Device number (1-based). Use 0 if using device_name.
     - device_name: Device name (alternative to device_index).
     - chain_index: Chain number inside a rack (1-based, 0 = no chain).
     """
-    return _toggle_device(track_index, device_index, device_name, chain_index, True)
+    return _toggle_device(track_index, device_index, device_name, chain_index, True, track_type)
 
 
 @mcp.tool()
@@ -2161,29 +2316,32 @@ def disable_device(
     device_index: int = 0,
     device_name: str = "",
     chain_index: int = 0,
+    track_type: str = "track",
 ) -> str:
     """Disable (bypass) a device on a track.
 
     Parameters:
     - track_index: Track number (1-based).
+    - track_type: "track" (default), "return" (1 = return A) or "master".
     - device_index: Device number (1-based). Use 0 if using device_name.
     - device_name: Device name (alternative to device_index).
     - chain_index: Chain number inside a rack (1-based, 0 = no chain).
     """
-    return _toggle_device(track_index, device_index, device_name, chain_index, False)
+    return _toggle_device(track_index, device_index, device_name, chain_index, False, track_type)
 
 
-def _toggle_device(track_index, device_index, device_name, chain_index, enabled):
+def _toggle_device(track_index, device_index, device_name, chain_index, enabled,
+                   track_type="track"):
     """Shared logic for enable/disable device."""
     try:
         ableton = get_ableton_connection()
-        ti = _to_zero_based(track_index, "track_index")
+        ti = _track_target_index(track_index, track_type)
         di = _optional_to_zero_based(device_index, "device_index")
         ci = _optional_to_zero_based(chain_index, "chain_index")
 
         # If device_name provided, resolve to index
         if device_name and di is None:
-            info = ableton.send_command("get_track_info", {"track_index": ti})
+            info = ableton.send_command("get_track_info", {"track_index": ti, "track_type": track_type})
             devices = info.get("devices", [])
             matches = [d for d in devices if d["name"].lower() == device_name.lower()]
             if len(matches) == 0:
@@ -2197,7 +2355,7 @@ def _toggle_device(track_index, device_index, device_name, chain_index, enabled)
             di = 0
 
         result = ableton.send_command("set_device_enabled", {
-            "track_index": ti,
+            "track_index": ti, "track_type": track_type,
             "device_index": di,
             "chain_index": ci,
             "enabled": enabled,
@@ -2215,6 +2373,7 @@ def _toggle_device(track_index, device_index, device_name, chain_index, enabled)
 def get_chain_info(
     ctx: Context,
     track_index: int,
+    track_type: str = "track",
     device_index: int = 1,
     chain_index: int = 0,
 ) -> str:
@@ -2222,16 +2381,17 @@ def get_chain_info(
 
     Parameters:
     - track_index: Track number (1-based).
+    - track_type: "track" (default), "return" (1 = return A) or "master".
     - device_index: Device number (1-based, default 1).
     - chain_index: Chain number (1-based) to drill into. 0 = list all chains.
     """
     try:
         ableton = get_ableton_connection()
-        ti = _to_zero_based(track_index, "track_index")
+        ti = _track_target_index(track_index, track_type)
         di = _to_zero_based(device_index, "device_index")
         ci = _optional_to_zero_based(chain_index, "chain_index")
         result = ableton.send_command("get_chain_info", {
-            "track_index": ti,
+            "track_index": ti, "track_type": track_type,
             "device_index": di,
             "chain_index": ci,
         })
@@ -2266,19 +2426,21 @@ def get_chain_info(
 
 
 @mcp.tool()
-def get_drum_pad_info(ctx: Context, track_index: int, device_index: int = 1) -> str:
+def get_drum_pad_info(ctx: Context, track_index: int, device_index: int = 1,
+                      track_type: str = "track") -> str:
     """List filled drum pads in a Drum Rack.
 
     Parameters:
     - track_index: Track number (1-based).
+    - track_type: "track" (default), "return" (1 = return A) or "master".
     - device_index: Device number (1-based, default 1).
     """
     try:
         ableton = get_ableton_connection()
-        ti = _to_zero_based(track_index, "track_index")
+        ti = _track_target_index(track_index, track_type)
         di = _to_zero_based(device_index, "device_index")
         result = ableton.send_command("get_drum_pad_info", {
-            "track_index": ti,
+            "track_index": ti, "track_type": track_type,
             "device_index": di,
         })
 
@@ -2305,6 +2467,7 @@ def get_drum_pad_info(ctx: Context, track_index: int, device_index: int = 1) -> 
 def delete_device(
     ctx: Context,
     track_index: int,
+    track_type: str = "track",
     device_index: int = 0,
     device_name: str = "",
 ) -> str:
@@ -2312,17 +2475,18 @@ def delete_device(
 
     Parameters:
     - track_index: Track number (1-based).
+    - track_type: "track" (default), "return" (1 = return A) or "master".
     - device_index: Device number (1-based).
     - device_name: Device name (alternative to device_index).
     """
     try:
         ableton = get_ableton_connection()
-        ti = _to_zero_based(track_index, "track_index")
+        ti = _track_target_index(track_index, track_type)
         di = _optional_to_zero_based(device_index, "device_index")
 
         # Resolve by name if needed
         if device_name and di is None:
-            info = ableton.send_command("get_track_info", {"track_index": ti})
+            info = ableton.send_command("get_track_info", {"track_index": ti, "track_type": track_type})
             devices = info.get("devices", [])
             matches = [d for d in devices if d["name"].lower() == device_name.lower()]
             if len(matches) == 0:
@@ -2335,7 +2499,7 @@ def delete_device(
             di = 0
 
         result = ableton.send_command("delete_device", {
-            "track_index": ti,
+            "track_index": ti, "track_type": track_type,
             "device_index": di,
         })
 
@@ -2432,6 +2596,7 @@ def delete_track(
 def navigate_device_preset(
     ctx: Context,
     track_index: int,
+    track_type: str = "track",
     device_index: int = 1,
     chain_index: int = 0,
     direction: str = "next",
@@ -2440,17 +2605,18 @@ def navigate_device_preset(
 
     Parameters:
     - track_index: Track number (1-based).
+    - track_type: "track" (default), "return" (1 = return A) or "master".
     - device_index: Device number (1-based, default 1).
     - chain_index: Chain number inside a rack (1-based, 0 = no chain).
     - direction: "next", "previous", or "current".
     """
     try:
         ableton = get_ableton_connection()
-        ti = _to_zero_based(track_index, "track_index")
+        ti = _track_target_index(track_index, track_type)
         di = _to_zero_based(device_index, "device_index")
         ci = _optional_to_zero_based(chain_index, "chain_index")
         result = ableton.send_command("navigate_preset", {
-            "track_index": ti,
+            "track_index": ti, "track_type": track_type,
             "device_index": di,
             "chain_index": ci,
             "direction": direction,

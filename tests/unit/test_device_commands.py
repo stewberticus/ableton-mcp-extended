@@ -49,7 +49,7 @@ class TestGetDeviceParameters:
 
         result = get_device_parameters(MagicMock(), track_index=1, device_index=2)
         mock_ableton.send_command.assert_called_with("get_device_parameters", {
-            "track_index": 0,
+            "track_index": 0, "track_type": "track",
             "device_index": 1,
             "chain_index": None,
             "show_all": True,
@@ -285,7 +285,7 @@ class TestDeleteDevice:
 
         result = delete_device(MagicMock(), track_index=1, device_index=2)
         mock_ableton.send_command.assert_called_with("delete_device", {
-            "track_index": 0, "device_index": 1,
+            "track_index": 0, "track_type": "track", "device_index": 1,
         })
         assert "Deleted Compressor" in result
         assert "1 devices remaining" in result
@@ -320,7 +320,8 @@ class TestNavigateDevicePreset:
 
         result = navigate_device_preset(MagicMock(), track_index=1, direction="next")
         mock_ableton.send_command.assert_called_with("navigate_preset", {
-            "track_index": 0, "device_index": 0, "chain_index": None, "direction": "next",
+            "track_index": 0, "track_type": "track", "device_index": 0, "chain_index": None,
+            "direction": "next",
         })
         assert "Warm Pad" in result
         assert "6/128" in result
