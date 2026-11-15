@@ -9,26 +9,6 @@ import sys
 import types
 from unittest.mock import MagicMock
 
-_mock_fastmcp = MagicMock()
-_mock_fastmcp.FastMCP.return_value.tool.return_value = lambda fn: fn
-sys.modules.setdefault('mcp', MagicMock())
-sys.modules.setdefault('mcp.server', MagicMock())
-sys.modules.setdefault('mcp.server.fastmcp', _mock_fastmcp)
-
-
-class _StubControlSurface:
-    def __init__(self, c_instance):
-        pass
-
-    def log_message(self, msg):
-        pass
-
-
-_framework = types.ModuleType("_Framework")
-_cs_module = types.ModuleType("_Framework.ControlSurface")
-_cs_module.ControlSurface = _StubControlSurface
-sys.modules.setdefault("_Framework", _framework)
-sys.modules.setdefault("_Framework.ControlSurface", _cs_module)
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 sys.path.insert(0, REPO_ROOT)

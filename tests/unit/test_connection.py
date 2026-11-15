@@ -7,12 +7,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-_mock_fastmcp = MagicMock()
-_mock_fastmcp.FastMCP.return_value.tool.return_value = lambda fn: fn
-sys.modules.setdefault('mcp', MagicMock())
-sys.modules.setdefault('mcp.server', MagicMock())
-sys.modules.setdefault('mcp.server.fastmcp', _mock_fastmcp)
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from MCP_Server.server import (  # noqa: E402
     AbletonConnection, AbletonCommandError, _socket_is_alive,

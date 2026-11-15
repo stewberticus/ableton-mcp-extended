@@ -5,15 +5,7 @@ import os
 from unittest.mock import MagicMock, patch, call
 
 # Mock mcp dependencies before importing server module
-# Make @mcp.tool() a pass-through decorator so actual functions are preserved
-_mock_mcp_module = MagicMock()
-_mock_fastmcp = MagicMock()
-_mock_fastmcp.FastMCP.return_value.tool.return_value = lambda fn: fn
-sys.modules['mcp'] = _mock_mcp_module
-sys.modules['mcp.server'] = MagicMock()
-sys.modules['mcp.server.fastmcp'] = _mock_fastmcp
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from MCP_Server.server import (
     bar_to_beat, beat_to_bar,

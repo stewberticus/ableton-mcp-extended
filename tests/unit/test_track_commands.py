@@ -3,15 +3,6 @@ import sys
 import os
 from unittest.mock import MagicMock, patch
 
-# Mock MCP dependencies before importing server
-_mock_mcp_module = MagicMock()
-_mock_fastmcp = MagicMock()
-_mock_fastmcp.FastMCP.return_value.tool.return_value = lambda fn: fn
-sys.modules['mcp'] = _mock_mcp_module
-sys.modules['mcp.server'] = MagicMock()
-sys.modules['mcp.server.fastmcp'] = _mock_fastmcp
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from MCP_Server.server import create_audio_track, delete_track, get_track_deletion_status
 

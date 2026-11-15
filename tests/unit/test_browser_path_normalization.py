@@ -4,21 +4,6 @@ import sys
 import types
 
 
-# Mock Ableton's ControlSurface dependency before importing the Remote Script.
-_framework_module = types.ModuleType("_Framework")
-_control_surface_module = types.ModuleType("_Framework.ControlSurface")
-
-
-class _DummyControlSurface:
-    pass
-
-
-_control_surface_module.ControlSurface = _DummyControlSurface
-sys.modules["_Framework"] = _framework_module
-sys.modules["_Framework.ControlSurface"] = _control_surface_module
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-
 from AbletonMCP_Remote_Script import AbletonMCP  # noqa: E402
 
 
