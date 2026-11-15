@@ -323,7 +323,8 @@ class AbletonMCP(ControlSurface):
             "get_browser_tree": lambda p: self.get_browser_tree(g(p, "category_type", "all")),
             "get_browser_items_at_path": lambda p: self.get_browser_items_at_path(g(p, "path", "")),
             "load_browser_item": lambda p: self._load_browser_item(
-                g(p, "track_index", 0), g(p, "item_uri", ""), g(p, "track_type", "track")),
+                g(p, "track_index", 0), g(p, "item_uri", ""), g(p, "track_type", "track"),
+                g(p, "path")),
             # Arrangement
             "get_arrangement_info": lambda p: self._get_arrangement_info(g(p, "track_index", -1)),
             "create_arrangement_clip": lambda p: self._create_arrangement_clip(
@@ -1491,38 +1492,83 @@ class AbletonMCP(ControlSurface):
 
         return None, normalized_root
     
-    def _load_browser_item(self, track_index, item_uri, track_type="track"):
-        """Load a browser item onto a track by its URI"""
+    def _browser_item_at_path(self, browser, path):
+        """Walk a "category/folder/item" path and return the browser item, or None."""
+        parts = self._split_browser_path(path)
+        if not parts:
+            return None
+        item, _ = self._resolve_browser_root_category(browser, parts[0])
+        for part in parts[1:]:
+            if item is None:
+                return None
+            match = None
+            for child in getattr(item, "children", []):
+                if getattr(child, "name", "").lower() == part.lower():
+                    match = child
+                    break
+            item = match
+        return item
+
+    def _find_browser_item(self, browser, uri, path=None):
+        """Find a browser item by URI, trying (1) a cache, (2) the path hint,
+        then (3) a full browser walk. The full walk can take seconds on a
+        large library, so callers should pass the path when they know it."""
+        cache = self.__dict__.setdefault("_browser_item_cache", {})
+        item = cache.get(uri)
+        if item is not None:
+            return item
+        if path:
+            node = self._browser_item_at_path(browser, path)
+            if node is not None:
+                if getattr(node, "uri", None) == uri:
+                    item = node
+                else:
+                    for child in getattr(node, "children", []):
+                        if getattr(child, "uri", None) == uri:
+                            item = child
+                            break
+        if item is None:
+            item = self._find_browser_item_by_uri(browser, uri)
+        if item is not None:
+            cache[uri] = item
+        return item
+
+    def _load_browser_item(self, track_index, item_uri, track_type="track", path=None):
+        """Load a browser item onto a track by its URI (path is an optional speed-up hint)."""
         try:
             track = self._device_track(track_index, track_type)
-            
-            # Access the application's browser instance instead of creating a new one
             app = self.application()
-            
-            # Find the browser item by URI
-            item = self._find_browser_item_by_uri(app.browser, item_uri)
-            
+
+            item = self._find_browser_item(app.browser, item_uri, path)
             if not item:
                 raise ValueError("Browser item with URI '{0}' not found".format(item_uri))
-            
-            # Select the track
+
+            before = [d.name for d in track.devices]
             self._song.view.selected_track = track
-            
-            # Load the item
             app.browser.load_item(item)
-            
-            result = {
+            after = [d.name for d in track.devices]
+
+            remaining = list(before)
+            new_devices = []
+            for name in after:
+                if name in remaining:
+                    remaining.remove(name)
+                else:
+                    new_devices.append(name)
+
+            return {
                 "loaded": True,
                 "item_name": item.name,
                 "track_name": track.name,
-                "uri": item_uri
+                "uri": item_uri,
+                "new_devices": new_devices,
+                "devices_after": after,
             }
-            return result
         except Exception as e:
             self.log_message("Error loading browser item: {0}".format(str(e)))
             self.log_message(traceback.format_exc())
             raise
-    
+
     def _find_browser_item_by_uri(self, browser_or_item, uri, max_depth=10, current_depth=0):
         """Find a browser item by its URI"""
         try:

@@ -363,6 +363,7 @@ def _invalidate_external_plugin_cache() -> None:
     with _external_plugin_cache_lock:
         _external_plugin_cache["plugins"] = None
         _external_plugin_cache["built_at"] = 0.0
+    _native_device_cache.clear()
 
 def _socket_is_alive(sock) -> bool:
     """Return False if the socket is missing or the peer has closed it.
@@ -1084,23 +1085,29 @@ def set_tempo(ctx: Context, tempo: float) -> str:
 
 
 @mcp.tool()
-def load_instrument_or_effect(ctx: Context, track_index: int, uri: str, track_type: str = "track") -> str:
+def load_instrument_or_effect(ctx: Context, track_index: int, uri: str, track_type: str = "track",
+                              path: str = "") -> str:
     """
     Load an instrument or effect onto a track using its URI.
 
+    To load one of Live's own devices by name (Operator, Reverb, ...), use
+    load_device instead; for VST/AU plugins use load_external_plugin.
+
     Parameters:
     - track_index: Track number (1-based).
-    - track_type: "track" (default), "return" (1 = return A) or "master".
     - uri: The URI of the instrument or effect to load (e.g., 'query:Synths#Instrument%20Rack:Bass:FileId_5116').
+    - track_type: "track" (default), "return" (1 = return A) or "master".
+    - path: Optional browser path of the item or its folder (as shown by
+      get_browser_items_at_path). Makes loading much faster on big libraries.
     """
     try:
         ableton = get_ableton_connection()
         ti = _track_target_index(track_index, track_type)
-        result = ableton.send_command("load_browser_item", {
-            "track_index": ti, "track_type": track_type,
-            "item_uri": uri
-        })
-        
+        params = {"track_index": ti, "track_type": track_type, "item_uri": uri}
+        if path:
+            params["path"] = path
+        result = ableton.send_command("load_browser_item", params)
+
         # Check if the instrument was loaded successfully
         if result.get("loaded", False):
             new_devices = result.get("new_devices", [])
@@ -1695,6 +1702,7 @@ def load_external_plugin(
         result = ableton.send_command("load_browser_item", {
             "track_index": ti, "track_type": track_type,
             "item_uri": chosen.get("uri"),
+            "path": chosen.get("path"),
         })
 
         if result.get("loaded", False):
@@ -1705,6 +1713,91 @@ def load_external_plugin(
     except Exception as e:
         logger.error(f"Error loading external plugin: {str(e)}")
         return f"Error loading external plugin: {str(e)}"
+
+
+_NATIVE_DEVICE_ROOTS = {
+    "instruments": "instruments",
+    "audio_effects": "audio_effects",
+    "midi_effects": "midi_effects",
+}
+_native_device_cache: Dict[str, Any] = {}
+
+
+def _get_native_devices(ableton: AbletonConnection, root: str, force_refresh: bool = False) -> List[Dict[str, Any]]:
+    """Live's own devices under one browser root (cached like external plugins).
+
+    Only device items are kept (not presets), two folder levels deep, which
+    covers both flat and grouped browser layouts.
+    """
+    now = time.monotonic()
+    cached = _native_device_cache.get(root)
+    if (not force_refresh and cached is not None
+            and now - cached[0] <= _EXTERNAL_PLUGIN_CACHE_TTL_SECONDS):
+        return cached[1]
+    items = _collect_external_plugins_from_root(ableton, root_path=root, max_depth=2)
+    devices = [i for i in items if i.get("is_device")]
+    _native_device_cache[root] = (now, devices)
+    return devices
+
+
+@mcp.tool()
+def load_device(
+    ctx: Context,
+    track_index: int,
+    name: str,
+    category: str = "auto",
+    track_type: str = "track",
+) -> str:
+    """Load one of Live's built-in devices by name, e.g. "Operator",
+    "Wavetable", "Drift", "Reverb", "EQ Eight", "Compressor", "Arpeggiator".
+
+    For VST/AU plugins (Serum, FabFilter...) use load_external_plugin.
+
+    Parameters:
+    - track_index: Track number (1-based).
+    - name: Device name; case and spacing don't matter, partial names work
+      when they are unambiguous.
+    - category: "instruments", "audio_effects", "midi_effects" or "auto"
+      (search all three).
+    - track_type: "track" (default), "return" (1 = return A) or "master".
+    """
+    try:
+        if not name or not name.strip():
+            return "Error: name is required."
+        roots = (list(_NATIVE_DEVICE_ROOTS) if category == "auto"
+                 else [_NATIVE_DEVICE_ROOTS.get(category.strip().lower().replace(" ", "_"))])
+        if roots == [None]:
+            return f"Error: category must be auto, {', '.join(_NATIVE_DEVICE_ROOTS)}"
+
+        ableton = get_ableton_connection()
+        ti = _track_target_index(track_index, track_type)
+        scored = []
+        for root in roots:
+            for device in _get_native_devices(ableton, root):
+                score = _plugin_match_score(device.get("name", ""), name)
+                if score > 0:
+                    scored.append((score, device))
+        if not scored:
+            return (f"Error: no built-in device matched '{name}'. If it is a plugin, "
+                    "use load_external_plugin.")
+        scored.sort(key=lambda x: (-x[0], x[1].get("name", "")))
+        top = scored[0][0]
+        best = [d for sc, d in scored if sc == top]
+        unique_names = sorted({d.get("name") for d in best})
+        if len(unique_names) > 1 and top < 1000:
+            return f"Error: '{name}' matches several devices: {', '.join(unique_names[:8])}. Be more specific."
+        chosen = best[0]
+        result = ableton.send_command("load_browser_item", {
+            "track_index": ti, "track_type": track_type,
+            "item_uri": chosen.get("uri"), "path": chosen.get("path"),
+        })
+        if not result.get("loaded"):
+            return f"Error: Live did not load '{chosen.get('name')}'."
+        devices = ", ".join(result.get("devices_after", []))
+        return f"Loaded {chosen.get('name')} on track {track_index}. Devices now: {devices}"
+    except Exception as e:
+        logger.error(f"Error loading device: {str(e)}")
+        return f"Error loading device: {str(e)}"
 
 
 @mcp.tool()
@@ -1751,7 +1844,8 @@ def load_drum_kit(ctx: Context, track_index: int, rack_uri: str, kit_path: str,
         kit_uri = loadable_kits[0].get("uri")
         load_result = ableton.send_command("load_browser_item", {
             "track_index": ti, "track_type": track_type,
-            "item_uri": kit_uri
+            "item_uri": kit_uri,
+            "path": kit_path,
         })
         
         return f"Loaded drum rack and kit '{loadable_kits[0].get('name')}' on track {track_index}"
