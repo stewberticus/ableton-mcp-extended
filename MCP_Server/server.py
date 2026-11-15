@@ -1,5 +1,6 @@
 # ableton_mcp_server.py
 from mcp.server.fastmcp import FastMCP, Context
+import functools
 import math
 import os
 import sys
@@ -246,6 +247,36 @@ mcp = FastMCP(
     lifespan=server_lifespan
 )
 
+# ── Tool registration ────────────────────────────────────────────
+#
+# Tools return readable strings, and failures are strings starting with
+# "Error". Returned as-is, an MCP client sees those as successful calls. The
+# tool() decorator registers a wrapper with FastMCP that raises ToolError for
+# them, so clients get isError=true with the same message. The undecorated
+# function stays in this module, so tests and internal callers still get
+# the plain string.
+
+try:
+    from mcp.server.fastmcp.exceptions import ToolError
+except Exception:  # mcp not installed (unit tests stub it)
+    class ToolError(Exception):
+        """Raised to report a tool failure to the MCP client."""
+
+
+def tool(*tool_args, **tool_kwargs):
+    def decorator(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            result = fn(*args, **kwargs)
+            if isinstance(result, str) and result.startswith("Error"):
+                raise ToolError(result)
+            return result
+
+        mcp.tool(*tool_args, **tool_kwargs)(wrapper)
+        return fn
+    return decorator
+
+
 # ── Index conversion helpers ─────────────────────────────────────
 #
 # Convention: every MCP tool exposes **1-based** indices to callers.
@@ -468,7 +499,7 @@ def get_ableton_connection():
 
 # Core Tool endpoints
 
-@mcp.tool()
+@tool()
 def get_session_info(ctx: Context) -> str:
     """Get detailed information about the current Ableton session"""
     try:
@@ -479,7 +510,7 @@ def get_session_info(ctx: Context) -> str:
         logger.error(f"Error getting session info from Ableton: {str(e)}")
         return f"Error getting session info: {str(e)}"
 
-@mcp.tool()
+@tool()
 def get_track_info(ctx: Context, track_index: int, track_type: str = "track") -> str:
     """
     Get detailed information about a specific track in Ableton.
@@ -514,7 +545,7 @@ def _create_track(kind: str, index: int) -> str:
     return msg
 
 
-@mcp.tool()
+@tool()
 def create_midi_track(ctx: Context, index: int = 0) -> str:
     """
     Create a new MIDI track in the Ableton session.
@@ -530,7 +561,7 @@ def create_midi_track(ctx: Context, index: int = 0) -> str:
         return f"Error creating MIDI track: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def create_audio_track(ctx: Context, index: int = 0) -> str:
     """
     Create a new audio track in the Ableton session.
@@ -546,7 +577,7 @@ def create_audio_track(ctx: Context, index: int = 0) -> str:
         return f"Error creating audio track: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def set_track_name(ctx: Context, track_index: int, name: str) -> str:
     """
     Set the name of a track.
@@ -591,7 +622,7 @@ _TRACK_TYPE_DOC = """
       addresses the return tracks in order."""
 
 
-@mcp.tool()
+@tool()
 def get_track_volume(ctx: Context, track_index: int = 1, track_type: str = "track") -> str:
     """Get the current fader volume (with Live's dB readout) and panning for a track.
 
@@ -616,7 +647,7 @@ def get_track_volume(ctx: Context, track_index: int = 1, track_type: str = "trac
         return f"Error getting track volume: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def set_track_volume(ctx: Context, track_index: int = 1, volume: float = 0.85,
                      track_type: str = "track") -> str:
     """Set the mixer fader volume for a track, return track or the master.
@@ -645,7 +676,7 @@ def set_track_volume(ctx: Context, track_index: int = 1, volume: float = 0.85,
         return f"Error setting track volume: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def set_track_panning(ctx: Context, track_index: int = 1, panning: float = 0.0,
                       track_type: str = "track") -> str:
     """Set the mixer panning for a track, return track or the master.
@@ -667,7 +698,7 @@ def set_track_panning(ctx: Context, track_index: int = 1, panning: float = 0.0,
         return f"Error setting track panning: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def set_track_mute(ctx: Context, track_index: int, mute: bool = True,
                    track_type: str = "track") -> str:
     """Mute or unmute a track (track activator off/on).
@@ -689,7 +720,7 @@ def set_track_mute(ctx: Context, track_index: int, mute: bool = True,
         return f"Error setting track mute: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def set_track_solo(ctx: Context, track_index: int, solo: bool = True,
                    exclusive: bool = False, track_type: str = "track") -> str:
     """Solo or unsolo a track.
@@ -712,7 +743,7 @@ def set_track_solo(ctx: Context, track_index: int, solo: bool = True,
         return f"Error setting track solo: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def set_track_arm(ctx: Context, track_index: int, arm: bool = True) -> str:
     """Arm or disarm a session track for recording.
 
@@ -733,7 +764,7 @@ def set_track_arm(ctx: Context, track_index: int, arm: bool = True) -> str:
         return f"Error setting track arm: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def set_track_send(ctx: Context, track_index: int, send: str = "A", level: float = 0.0,
                    track_type: str = "track") -> str:
     """Set how much of a track is sent to a return track (reverb/delay buses).
@@ -779,7 +810,7 @@ def _resolve_send_index(ableton: "AbletonConnection", send: Union[str, int]) -> 
     raise ValueError(f"No return track called '{send}'. Return tracks: {', '.join(names) or 'none'}")
 
 
-@mcp.tool()
+@tool()
 def create_return_track(ctx: Context) -> str:
     """Add a new return track (for a shared reverb or delay bus).
 
@@ -795,7 +826,7 @@ def create_return_track(ctx: Context) -> str:
         logger.error(f"Error creating return track: {str(e)}")
         return f"Error creating return track: {str(e)}"
 
-@mcp.tool()
+@tool()
 def create_clip(ctx: Context, track_index: int, clip_index: int, length: float = 4.0) -> str:
     """
     Create a new MIDI clip in the specified track and clip slot.
@@ -854,7 +885,7 @@ def _clip_ref(track_index: int, clip_index: int, clip_name: str, arrangement: bo
     return f"'{clip_name}' on track {track_index}" if clip_name else f"track {track_index}, {where} {clip_index}"
 
 
-@mcp.tool()
+@tool()
 def add_notes_to_clip(
     ctx: Context,
     track_index: int,
@@ -891,7 +922,7 @@ def add_notes_to_clip(
         return f"Error adding notes to clip: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def add_notes_to_arrangement_clip(
     ctx: Context,
     track_index: int,
@@ -928,7 +959,7 @@ def add_notes_to_arrangement_clip(
         return f"Error adding notes to arrangement clip: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def get_clip_notes(
     ctx: Context,
     track_index: int,
@@ -965,7 +996,7 @@ def get_clip_notes(
         return f"Error reading clip notes: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def remove_clip_notes(
     ctx: Context,
     track_index: int,
@@ -1005,7 +1036,7 @@ def remove_clip_notes(
         return f"Error removing clip notes: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def transpose_clip_notes(
     ctx: Context,
     track_index: int,
@@ -1036,7 +1067,7 @@ def transpose_clip_notes(
         return f"Error transposing clip notes: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def quantize_clip_notes(
     ctx: Context,
     track_index: int,
@@ -1075,7 +1106,7 @@ def quantize_clip_notes(
         logger.error(f"Error quantizing clip notes: {str(e)}")
         return f"Error quantizing clip notes: {str(e)}"
 
-@mcp.tool()
+@tool()
 def set_clip_name(ctx: Context, track_index: int, clip_index: int, name: str) -> str:
     """
     Set the name of a clip.
@@ -1099,7 +1130,7 @@ def set_clip_name(ctx: Context, track_index: int, clip_index: int, name: str) ->
         logger.error(f"Error setting clip name: {str(e)}")
         return f"Error setting clip name: {str(e)}"
 
-@mcp.tool()
+@tool()
 def set_tempo(ctx: Context, tempo: float) -> str:
     """
     Set the tempo of the Ableton session.
@@ -1116,7 +1147,7 @@ def set_tempo(ctx: Context, tempo: float) -> str:
         return f"Error setting tempo: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def load_instrument_or_effect(ctx: Context, track_index: int, uri: str, track_type: str = "track",
                               path: str = "") -> str:
     """
@@ -1149,12 +1180,12 @@ def load_instrument_or_effect(ctx: Context, track_index: int, uri: str, track_ty
                 devices = result.get("devices_after", [])
                 return f"Loaded instrument with URI '{uri}' on track {track_index}. Devices on track: {', '.join(devices)}"
         else:
-            return f"Failed to load instrument with URI '{uri}'"
+            return f"Error: Live did not load the item with URI '{uri}'"
     except Exception as e:
         logger.error(f"Error loading instrument by URI: {str(e)}")
         return f"Error loading instrument by URI: {str(e)}"
 
-@mcp.tool()
+@tool()
 def fire_clip(ctx: Context, track_index: int, clip_index: int) -> str:
     """
     Start playing a clip.
@@ -1176,7 +1207,7 @@ def fire_clip(ctx: Context, track_index: int, clip_index: int) -> str:
         logger.error(f"Error firing clip: {str(e)}")
         return f"Error firing clip: {str(e)}"
 
-@mcp.tool()
+@tool()
 def stop_clip(ctx: Context, track_index: int, clip_index: int) -> str:
     """
     Stop playing a clip.
@@ -1198,7 +1229,7 @@ def stop_clip(ctx: Context, track_index: int, clip_index: int) -> str:
         logger.error(f"Error stopping clip: {str(e)}")
         return f"Error stopping clip: {str(e)}"
 
-@mcp.tool()
+@tool()
 def start_playback(ctx: Context) -> str:
     """Start playing the Ableton session."""
     try:
@@ -1209,7 +1240,7 @@ def start_playback(ctx: Context) -> str:
         logger.error(f"Error starting playback: {str(e)}")
         return f"Error starting playback: {str(e)}"
 
-@mcp.tool()
+@tool()
 def stop_playback(ctx: Context) -> str:
     """Stop playing the Ableton session."""
     try:
@@ -1226,7 +1257,7 @@ _LAUNCH_QUANTIZATION = ["none", "8 bars", "4 bars", "2 bars", "1 bar", "1/2", "1
                         "1/4", "1/4t", "1/8", "1/8t", "1/16", "1/16t", "1/32"]
 
 
-@mcp.tool()
+@tool()
 def get_transport_state(ctx: Context) -> str:
     """Show transport and recording state: playing, tempo, time signature,
     record/overdub/automation switches, metronome, launch quantization and
@@ -1239,7 +1270,7 @@ def get_transport_state(ctx: Context) -> str:
         return f"Error getting transport state: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def set_record_state(
     ctx: Context,
     arrangement_record: bool = None,
@@ -1272,7 +1303,7 @@ def set_record_state(
         return f"Error setting record state: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def capture_midi(ctx: Context, destination: str = "auto") -> str:
     """Capture MIDI: turn what was just played on an armed/monitored MIDI
     track into a clip, even if recording was off.
@@ -1292,7 +1323,7 @@ def capture_midi(ctx: Context, destination: str = "auto") -> str:
         return f"Error capturing MIDI: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def set_metronome(ctx: Context, enabled: bool = True) -> str:
     """Turn the metronome on or off.
 
@@ -1308,7 +1339,7 @@ def set_metronome(ctx: Context, enabled: bool = True) -> str:
         return f"Error setting metronome: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def set_launch_quantization(ctx: Context, quantization: str = "1 bar") -> str:
     """Set global clip launch quantization (when fired clips/scenes start).
 
@@ -1329,7 +1360,7 @@ def set_launch_quantization(ctx: Context, quantization: str = "1 bar") -> str:
         return f"Error setting launch quantization: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def set_time_signature(ctx: Context, numerator: int = 4, denominator: int = 4) -> str:
     """Set the song's time signature.
 
@@ -1348,7 +1379,7 @@ def set_time_signature(ctx: Context, numerator: int = 4, denominator: int = 4) -
         return f"Error setting time signature: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def undo(ctx: Context) -> str:
     """Undo the last change in Live (same as Cmd/Ctrl+Z)."""
     try:
@@ -1360,7 +1391,7 @@ def undo(ctx: Context) -> str:
         return f"Error undoing: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def redo(ctx: Context) -> str:
     """Redo the last undone change in Live."""
     try:
@@ -1372,7 +1403,7 @@ def redo(ctx: Context) -> str:
         return f"Error redoing: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def get_browser_tree(ctx: Context, category_type: str = "all") -> str:
     """
     Get a hierarchical tree of browser categories from Ableton.
@@ -1435,7 +1466,7 @@ def get_browser_tree(ctx: Context, category_type: str = "all") -> str:
             logger.error(f"Error getting browser tree: {error_msg}")
             return f"Error getting browser tree: {error_msg}"
 
-@mcp.tool()
+@tool()
 def get_browser_items_at_path(ctx: Context, path: str) -> str:
     """
     Get browser items at a specific path in Ableton's browser.
@@ -1618,7 +1649,7 @@ def _get_cached_external_plugins(
     return discovered
 
 
-@mcp.tool()
+@tool()
 def list_external_plugins(
     ctx: Context,
     query: str = "",
@@ -1678,7 +1709,7 @@ def list_external_plugins(
         return f"Error listing external plugins: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def load_external_plugin(
     ctx: Context,
     track_index: int,
@@ -1741,7 +1772,7 @@ def load_external_plugin(
             return (
                 "Loaded external plugin '{0}' on track {1} (matched '{2}')."
             ).format(chosen.get("name", "?"), track_index, plugin_name)
-        return "Failed to load external plugin '{0}'.".format(chosen.get("name", "?"))
+        return "Error: Live did not load external plugin '{0}'.".format(chosen.get("name", "?"))
     except Exception as e:
         logger.error(f"Error loading external plugin: {str(e)}")
         return f"Error loading external plugin: {str(e)}"
@@ -1772,7 +1803,7 @@ def _get_native_devices(ableton: AbletonConnection, root: str, force_refresh: bo
     return devices
 
 
-@mcp.tool()
+@tool()
 def load_device(
     ctx: Context,
     track_index: int,
@@ -1832,7 +1863,7 @@ def load_device(
         return f"Error loading device: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def load_drum_kit(ctx: Context, track_index: int, rack_uri: str, kit_path: str,
                   track_type: str = "track") -> str:
     """
@@ -1855,7 +1886,7 @@ def load_drum_kit(ctx: Context, track_index: int, rack_uri: str, kit_path: str,
         })
         
         if not result.get("loaded", False):
-            return f"Failed to load drum rack with URI '{rack_uri}'"
+            return f"Error: Live did not load the drum rack with URI '{rack_uri}'"
         
         # Step 2: Get the drum kit items at the specified path
         kit_result = ableton.send_command("get_browser_items_at_path", {
@@ -1905,7 +1936,7 @@ def _convert_bar_to_beat(bar: int, beat: float = 0.0) -> float:
     return beat
 
 
-@mcp.tool()
+@tool()
 def get_arrangement_info(ctx: Context, track_index: int = 0) -> str:
     """Get arrangement clips and transport state.
 
@@ -1949,7 +1980,7 @@ def get_arrangement_info(ctx: Context, track_index: int = 0) -> str:
         return f"Error getting arrangement info: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def get_cue_points(ctx: Context) -> str:
     """List all cue points (locators) with bar positions."""
     try:
@@ -1971,7 +2002,7 @@ def get_cue_points(ctx: Context) -> str:
         return f"Error getting cue points: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def set_song_time(ctx: Context, bar: int = 0, beat: float = 0.0) -> str:
     """Jump playback to a position.
 
@@ -1990,7 +2021,7 @@ def set_song_time(ctx: Context, bar: int = 0, beat: float = 0.0) -> str:
         return f"Error setting song time: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def set_arrangement_loop(
     ctx: Context,
     enabled: bool = True,
@@ -2045,7 +2076,7 @@ def set_arrangement_loop(
         return f"Error setting arrangement loop: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def jump_to_cue_point(ctx: Context, direction: str = "", name: str = "") -> str:
     """Jump to a cue point.
 
@@ -2067,7 +2098,7 @@ def jump_to_cue_point(ctx: Context, direction: str = "", name: str = "") -> str:
         return f"Error jumping to cue point: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def create_cue_point(ctx: Context, bar: int = 0, beat: float = 0.0, name: str = "") -> str:
     """Create a cue point at a position.
 
@@ -2086,7 +2117,7 @@ def create_cue_point(ctx: Context, bar: int = 0, beat: float = 0.0, name: str = 
         return f"Error creating cue point: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def delete_cue_point(ctx: Context, bar: int = 0, beat: float = 0.0) -> str:
     """Delete a cue point at a position.
 
@@ -2104,7 +2135,7 @@ def delete_cue_point(ctx: Context, bar: int = 0, beat: float = 0.0) -> str:
         return f"Error deleting cue point: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def create_arrangement_midi_clip(
     ctx: Context,
     track_index: int,
@@ -2161,7 +2192,7 @@ def create_arrangement_midi_clip(
         return f"Error creating arrangement MIDI clip: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def create_arrangement_audio_clip(
     ctx: Context,
     track_index: int,
@@ -2193,7 +2224,7 @@ def create_arrangement_audio_clip(
         return f"Error creating arrangement audio clip: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def duplicate_clip_to_arrangement(
     ctx: Context,
     track_index: int,
@@ -2226,7 +2257,7 @@ def duplicate_clip_to_arrangement(
         return f"Error duplicating clip to arrangement: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def delete_arrangement_clip(
     ctx: Context,
     track_index: int,
@@ -2293,7 +2324,7 @@ def _set_clip_properties(track_index, clip_index, clip_name, arrangement, props)
     return f"Updated {_clip_ref(track_index, clip_index, clip_name, arrangement)}: {changes}"
 
 
-@mcp.tool()
+@tool()
 def set_clip_property(
     ctx: Context,
     track_index: int,
@@ -2346,7 +2377,7 @@ def set_clip_property(
         return f"Error setting clip property: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def set_arrangement_clip_property(
     ctx: Context,
     track_index: int,
@@ -2398,7 +2429,7 @@ def set_arrangement_clip_property(
 
 # ── Session clip slot and scene tools ─────────────────────────────
 
-@mcp.tool()
+@tool()
 def delete_clip(ctx: Context, track_index: int, clip_index: int) -> str:
     """Delete the clip in a session clip slot.
 
@@ -2418,7 +2449,7 @@ def delete_clip(ctx: Context, track_index: int, clip_index: int) -> str:
         return f"Error deleting clip: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def duplicate_clip_to_slot(
     ctx: Context,
     track_index: int,
@@ -2449,7 +2480,7 @@ def duplicate_clip_to_slot(
         return f"Error duplicating clip: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def get_scenes(ctx: Context) -> str:
     """List the session's scenes (rows) with how many clips each holds."""
     try:
@@ -2465,7 +2496,7 @@ def get_scenes(ctx: Context) -> str:
         return f"Error getting scenes: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def create_scene(ctx: Context, index: int = 0, name: str = "") -> str:
     """Insert a new empty scene.
 
@@ -2486,7 +2517,7 @@ def create_scene(ctx: Context, index: int = 0, name: str = "") -> str:
         return f"Error creating scene: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def duplicate_scene(ctx: Context, scene_index: int) -> str:
     """Duplicate a scene (and all its clips) into a new scene right below it.
 
@@ -2503,7 +2534,7 @@ def duplicate_scene(ctx: Context, scene_index: int) -> str:
         return f"Error duplicating scene: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def delete_scene(ctx: Context, scene_index: int) -> str:
     """Delete a scene and the clips in it.
 
@@ -2521,7 +2552,7 @@ def delete_scene(ctx: Context, scene_index: int) -> str:
         return f"Error deleting scene: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def set_scene_name(ctx: Context, scene_index: int, name: str) -> str:
     """Rename a scene.
 
@@ -2539,7 +2570,7 @@ def set_scene_name(ctx: Context, scene_index: int, name: str) -> str:
         return f"Error renaming scene: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def fire_scene(ctx: Context, scene_index: int) -> str:
     """Launch every clip in a scene.
 
@@ -2556,7 +2587,7 @@ def fire_scene(ctx: Context, scene_index: int) -> str:
         return f"Error firing scene: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def stop_all_clips(ctx: Context) -> str:
     """Stop every playing session clip (like the Stop All Clips button)."""
     try:
@@ -2568,7 +2599,7 @@ def stop_all_clips(ctx: Context) -> str:
         return f"Error stopping all clips: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def set_ableton_view(ctx: Context, view: str = "Arranger") -> str:
     """Switch Ableton's main view.
 
@@ -2585,7 +2616,7 @@ def set_ableton_view(ctx: Context, view: str = "Arranger") -> str:
         return f"Error setting view: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def control_arrangement_view(ctx: Context, action: str, track_index: int = 0) -> str:
     """Control the arrangement view.
 
@@ -2607,7 +2638,7 @@ def control_arrangement_view(ctx: Context, action: str, track_index: int = 0) ->
         return f"Error controlling arrangement view: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def manage_clip_automation(
     ctx: Context,
     track_index: int,
@@ -2650,7 +2681,7 @@ def manage_clip_automation(
 
 # ── Device / Parameter Tools ──────────────────────────────────────
 
-@mcp.tool()
+@tool()
 def get_device_parameters(
     ctx: Context,
     track_index: int,
@@ -2745,7 +2776,7 @@ def get_device_parameters(
         return f"Error getting device parameters: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def set_device_parameter(
     ctx: Context,
     track_index: int,
@@ -2811,6 +2842,8 @@ def set_device_parameter(
         clamped = result.get("clamped", False)
 
         msg = "Set {0} to {1} (normalized {2})".format(param_name, display, round(new_val, 2))
+        if result.get("match_type") == "partial" and not alias_used:
+            msg += " [partial name match for '{0}']".format(parameter_name)
         if alias_used:
             msg += " [alias: {0}]".format(alias_used)
         if clamped:
@@ -2821,7 +2854,7 @@ def set_device_parameter(
         return f"Error setting device parameter: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def enable_device(
     ctx: Context,
     track_index: int,
@@ -2844,7 +2877,7 @@ def enable_device(
     return _toggle_device(track_index, device_index, device_name, chain_index, True, track_type, chain_device_index)
 
 
-@mcp.tool()
+@tool()
 def disable_device(
     ctx: Context,
     track_index: int,
@@ -2908,7 +2941,7 @@ def _toggle_device(track_index, device_index, device_name, chain_index, enabled,
         return f"Error toggling device: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def get_chain_info(
     ctx: Context,
     track_index: int,
@@ -2964,7 +2997,7 @@ def get_chain_info(
         return f"Error getting chain info: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def get_drum_pad_info(ctx: Context, track_index: int, device_index: int = 1,
                       track_type: str = "track") -> str:
     """List filled drum pads in a Drum Rack.
@@ -3002,7 +3035,7 @@ def get_drum_pad_info(ctx: Context, track_index: int, device_index: int = 1,
         return f"Error getting drum pad info: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def delete_device(
     ctx: Context,
     track_index: int,
@@ -3050,7 +3083,7 @@ def delete_device(
         return f"Error deleting device: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def get_track_deletion_status(ctx: Context) -> str:
     """Check whether session tracks can be deleted right now.
 
@@ -3080,7 +3113,7 @@ def get_track_deletion_status(ctx: Context) -> str:
         return f"Error checking track deletion status: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def delete_track(
     ctx: Context,
     track_index: int = 0,
@@ -3139,7 +3172,7 @@ def delete_track(
         return f"Error deleting track: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def delete_return_track(ctx: Context, return_index: int) -> str:
     """Delete a return track. Sends to it are removed from every track.
 
@@ -3157,7 +3190,7 @@ def delete_return_track(ctx: Context, return_index: int) -> str:
         return f"Error deleting return track: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def duplicate_track(ctx: Context, track_index: int) -> str:
     """Duplicate a track with its devices and clips. The copy goes right after it.
 
@@ -3175,7 +3208,7 @@ def duplicate_track(ctx: Context, track_index: int) -> str:
         return f"Error duplicating track: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def set_track_color(ctx: Context, track_index: int, color: Union[int, str]) -> str:
     """Set a track's color.
 
@@ -3196,7 +3229,7 @@ def set_track_color(ctx: Context, track_index: int, color: Union[int, str]) -> s
         return f"Error setting track color: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def set_group_folded(ctx: Context, track_index: int, folded: bool = True) -> str:
     """Fold (collapse) or unfold a group track.
 
@@ -3215,7 +3248,7 @@ def set_group_folded(ctx: Context, track_index: int, folded: bool = True) -> str
         return f"Error folding group: {str(e)}"
 
 
-@mcp.tool()
+@tool()
 def navigate_device_preset(
     ctx: Context,
     track_index: int,

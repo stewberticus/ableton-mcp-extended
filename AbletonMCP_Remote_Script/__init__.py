@@ -1722,8 +1722,11 @@ class AbletonMCP(ControlSurface):
             for cp in tuple(self._song.cue_points):
                 if abs(cp.time - time) < 0.01:
                     raise ValueError("Cue point already exists at this position: " + cp.name)
+            previous_time = self._song.current_song_time
             self._song.current_song_time = time
             self._song.set_or_delete_cue()
+            # set_or_delete_cue works at the playhead, so put it back afterwards.
+            self._song.current_song_time = previous_time
             if name:
                 for cp in tuple(self._song.cue_points):
                     if abs(cp.time - time) < 0.01:
@@ -1744,31 +1747,32 @@ class AbletonMCP(ControlSurface):
                     break
             if not found:
                 raise ValueError("No cue point at this position")
+            previous_time = self._song.current_song_time
             self._song.current_song_time = time
             self._song.set_or_delete_cue()
+            self._song.current_song_time = previous_time
             return {"deleted": True}
         except Exception as e:
             self.log_message("Error deleting cue point: " + str(e))
             raise
 
-    def _validate_not_return_or_master(self, track_index):
-        """Raise if track is a return or master track."""
+    def _validate_clip_track(self, track_index):
+        """Raise a clear error for tracks that cannot hold clips.
+
+        (song.tracks never contains return or master tracks, so the only
+        case to catch here is a group track.)
+        """
         track = self._song.tracks[track_index]
-        # Return tracks and master track are separate in the Live API,
-        # but if accessed via tracks list they are regular tracks.
-        # Check by comparing against return_tracks and master_track.
-        for rt in self._song.return_tracks:
-            if track == rt:
-                raise ValueError("Cannot create arrangement clips on return track '{0}'".format(track.name))
-        if track == self._song.master_track:
-            raise ValueError("Cannot create arrangement clips on master track")
+        if getattr(track, "is_foldable", False):
+            raise ValueError("'{0}' is a group track; group tracks cannot hold clips. "
+                             "Use one of the tracks inside it.".format(track.name))
 
     def _create_arrangement_clip(self, track_index, position, length, name=""):
         """Create MIDI clip in arrangement."""
         try:
             if track_index < 0 or track_index >= len(self._song.tracks):
                 raise IndexError("Track index out of range")
-            self._validate_not_return_or_master(track_index)
+            self._validate_clip_track(track_index)
             track = self._song.tracks[track_index]
             overlapped = self._check_overlap(track, position, length)
             track.create_midi_clip(position, length)
@@ -1791,7 +1795,7 @@ class AbletonMCP(ControlSurface):
         try:
             if track_index < 0 or track_index >= len(self._song.tracks):
                 raise IndexError("Track index out of range")
-            self._validate_not_return_or_master(track_index)
+            self._validate_clip_track(track_index)
             track = self._song.tracks[track_index]
             track.create_audio_clip(file_path, position)
             # Find the newly created clip
@@ -1998,6 +2002,7 @@ class AbletonMCP(ControlSurface):
 
             return {
                 "parameter_name": param.name,
+                "match_type": match_type,
                 "old_value": round(old_norm, 4),
                 "new_value": round(clamped, 4),
                 "display_value": str(param),
@@ -2335,10 +2340,16 @@ class AbletonMCP(ControlSurface):
                 if p.name.lower() == name_lower:
                     return p, "case_insensitive"
 
-            # Step 3: case-insensitive partial match
-            for p in params:
-                if name_lower in p.name.lower():
-                    return p, "partial"
+            # Step 3: case-insensitive partial match, only if unambiguous
+            partial = [p for p in params if name_lower in p.name.lower()]
+            if len(partial) == 1:
+                return partial[0], "partial"
+            if len(partial) > 1:
+                names = [p.name for p in partial]
+                raise ValueError("Parameter '{0}' is ambiguous on '{1}'; it matches: {2}. "
+                                 "Use the full name or parameter_index.".format(
+                                     name, device.name, ", ".join(names[:10])
+                                     + (" ..." if len(names) > 10 else "")))
 
             raise ValueError("Parameter '{0}' not found on device '{1}'".format(
                 name, device.name))
@@ -2419,22 +2430,35 @@ class AbletonMCP(ControlSurface):
                 "available_categories": browser_attrs
             }
             
-            # Helper function to process a browser item and its children
+            # Folder levels to include under each root. Kept shallow: every
+            # level is walked on Live's main thread.
+            max_depth = 2
+            max_children = 100
+            counter = {"folders": 0}
+
             def process_item(item, depth=0):
                 if not item:
                     return None
-                
-                result = {
+                children = list(getattr(item, "children", []) or [])
+                node = {
                     "name": item.name if hasattr(item, 'name') else "Unknown",
-                    "is_folder": hasattr(item, 'children') and bool(item.children),
+                    "is_folder": bool(children),
                     "is_device": hasattr(item, 'is_device') and item.is_device,
                     "is_loadable": hasattr(item, 'is_loadable') and item.is_loadable,
                     "uri": item.uri if hasattr(item, 'uri') else None,
-                    "children": []
+                    "children": [],
+                    "has_more": False,
                 }
-                
-                
-                return result
+                if children:
+                    counter["folders"] += 1
+                if depth < max_depth:
+                    folders = [c for c in children if getattr(c, "children", None)]
+                    for child in folders[:max_children]:
+                        node["children"].append(process_item(child, depth + 1))
+                    node["has_more"] = len(folders) > max_children
+                elif children:
+                    node["has_more"] = True
+                return node
             
             # Process based on category type and available attributes
             if (category_type == "all" or category_type == "instruments") and hasattr(app.browser, 'instruments'):
@@ -2496,6 +2520,7 @@ class AbletonMCP(ControlSurface):
                     except Exception as e:
                         self.log_message("Error processing {0}: {1}".format(attr, str(e)))
             
+            result["total_folders"] = counter["folders"]
             self.log_message("Browser tree generated for {0} with {1} root categories".format(
                 category_type, len(result['categories'])))
             return result
