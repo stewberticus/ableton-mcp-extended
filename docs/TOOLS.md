@@ -46,7 +46,7 @@ act on mixer or devices take `track_type` = `track` / `return` / `master`.
 | `set_launch_quantization` | `quantization='1 bar'` | Set global clip launch quantization (when fired clips/scenes start). |
 | `set_time_signature` | `numerator=4`, `denominator=4` | Set the song's time signature. |
 | `undo` | - | Undo the last change in Live (same as Cmd/Ctrl+Z). |
-| `redo` | - | Redo the last undone change in Live. |
+| `redo` | - | Redo the last undone change in Live. The reply says what changed. |
 | `get_browser_tree` | `category_type='all'` | Get a hierarchical tree of browser categories from Ableton. |
 | `get_browser_items_at_path` | `path` | Get browser items at a specific path in Ableton's browser. |
 | `list_external_plugins` | `query=''`, `max_results=50`, `refresh_cache=False` | List discovered external plugins (VST/AU), optionally filtered by name query. |
