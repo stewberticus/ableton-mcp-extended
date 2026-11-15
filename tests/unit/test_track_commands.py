@@ -125,14 +125,42 @@ class TestCreateAudioTrack:
         assert "Created new audio track: 4-Audio" in result
 
     @patch('MCP_Server.server.get_ableton_connection')
-    def test_passes_insert_index_through(self, mock_conn):
+    def test_insert_index_is_one_based(self, mock_conn):
         mock_ableton = MagicMock()
         mock_ableton.send_command.return_value = {"index": 0, "name": "1-Audio"}
         mock_conn.return_value = mock_ableton
 
-        create_audio_track(MagicMock(), index=0)
+        result = create_audio_track(MagicMock(), index=1)
 
         mock_ableton.send_command.assert_called_once_with("create_audio_track", {"index": 0})
+        assert "(track 1)" in result
+        assert "moved down by one" in result
+
+    @patch('MCP_Server.server.get_ableton_connection')
+    def test_zero_and_minus_one_mean_end(self, mock_conn):
+        mock_ableton = MagicMock()
+        mock_ableton.send_command.return_value = {"index": 5, "name": "6-Audio"}
+        mock_conn.return_value = mock_ableton
+
+        create_audio_track(MagicMock(), index=0)
+        result = create_audio_track(MagicMock(), index=-1)
+
+        for call in mock_ableton.send_command.call_args_list:
+            assert call[0][1] == {"index": -1}
+        assert "(track 6)" in result
+        assert "moved down" not in result
+
+    @patch('MCP_Server.server.get_ableton_connection')
+    def test_midi_track_uses_same_convention(self, mock_conn):
+        from MCP_Server.server import create_midi_track
+        mock_ableton = MagicMock()
+        mock_ableton.send_command.return_value = {"index": 2, "name": "3-MIDI"}
+        mock_conn.return_value = mock_ableton
+
+        result = create_midi_track(MagicMock(), index=3)
+
+        mock_ableton.send_command.assert_called_once_with("create_midi_track", {"index": 2})
+        assert "Created new MIDI track: 3-MIDI (track 3)" in result
 
     @patch('MCP_Server.server.get_ableton_connection')
     def test_reports_errors(self, mock_conn):

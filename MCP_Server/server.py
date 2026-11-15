@@ -497,35 +497,50 @@ def get_track_info(ctx: Context, track_index: int, track_type: str = "track") ->
         logger.error(f"Error getting track info from Ableton: {str(e)}")
         return f"Error getting track info: {str(e)}"
 
+def _create_track(kind: str, index: int) -> str:
+    """Shared body for create_midi_track / create_audio_track."""
+    if index < -1:
+        raise ValueError("index must be a 1-based position, or 0 / -1 for the end")
+    live_index = -1 if index in (0, -1) else index - 1
+    ableton = get_ableton_connection()
+    if kind == "midi":
+        result = ableton.send_command("create_midi_track", {"index": live_index})
+    else:
+        result = ableton.send_command("create_audio_track", {"index": live_index})
+    position = result.get("index", 0) + 1
+    msg = f"Created new {kind.upper() if kind == 'midi' else kind} track: {result.get('name', 'unknown')} (track {position})"
+    if live_index != -1:
+        msg += f". Tracks that were at {position} or later moved down by one."
+    return msg
+
+
 @mcp.tool()
-def create_midi_track(ctx: Context, index: int = -1) -> str:
+def create_midi_track(ctx: Context, index: int = 0) -> str:
     """
     Create a new MIDI track in the Ableton session.
-    
+
     Parameters:
-    - index: The index to insert the track at (-1 = end of list)
+    - index: Track number the new track should get (1-based). 0 or -1 = add
+      at the end. Inserting shifts every later track down by one.
     """
     try:
-        ableton = get_ableton_connection()
-        result = ableton.send_command("create_midi_track", {"index": index})
-        return f"Created new MIDI track: {result.get('name', 'unknown')}"
+        return _create_track("midi", index)
     except Exception as e:
         logger.error(f"Error creating MIDI track: {str(e)}")
         return f"Error creating MIDI track: {str(e)}"
 
 
 @mcp.tool()
-def create_audio_track(ctx: Context, index: int = -1) -> str:
+def create_audio_track(ctx: Context, index: int = 0) -> str:
     """
     Create a new audio track in the Ableton session.
 
     Parameters:
-    - index: The index to insert the track at (-1 = end of list)
+    - index: Track number the new track should get (1-based). 0 or -1 = add
+      at the end. Inserting shifts every later track down by one.
     """
     try:
-        ableton = get_ableton_connection()
-        result = ableton.send_command("create_audio_track", {"index": index})
-        return f"Created new audio track: {result.get('name', 'unknown')}"
+        return _create_track("audio", index)
     except Exception as e:
         logger.error(f"Error creating audio track: {str(e)}")
         return f"Error creating audio track: {str(e)}"
