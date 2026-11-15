@@ -52,6 +52,7 @@ MODIFYING_COMMANDS = frozenset([
     "set_view", "control_arrangement_view",
     "manage_clip_automation",
     "add_notes_to_arrangement_clip",
+    "remove_clip_notes", "transpose_clip_notes", "quantize_clip_notes",
     "set_device_parameter", "set_device_enabled",
     "delete_device", "navigate_preset",
     "set_track_volume", "set_track_panning",
@@ -636,34 +637,261 @@ def create_clip(ctx: Context, track_index: int, clip_index: int, length: float =
         logger.error(f"Error creating clip: {str(e)}")
         return f"Error creating clip: {str(e)}"
 
+# ── MIDI note tools ───────────────────────────────────────────────
+
+_NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+
+# Grid names accepted by quantize_clip_notes, in beats (1 beat = quarter note).
+_QUANTIZE_GRIDS = {
+    "1/1": 4.0, "1/2": 2.0, "1/4": 1.0, "1/8": 0.5, "1/16": 0.25, "1/32": 0.125,
+    "1/4t": 2.0 / 3, "1/8t": 1.0 / 3, "1/16t": 1.0 / 6, "1/32t": 1.0 / 12,
+}
+
+
+def note_name(pitch: int) -> str:
+    """Ableton-style note name (middle C, MIDI 60, is C3)."""
+    return f"{_NOTE_NAMES[pitch % 12]}{pitch // 12 - 2}"
+
+
+def _clip_target(track_index: int, clip_index: int, clip_name: str, arrangement: bool) -> Dict[str, Any]:
+    """Common params for commands that address a session or arrangement clip."""
+    params: Dict[str, Any] = {
+        "track_index": _to_zero_based(track_index, "track_index"),
+        "arrangement": bool(arrangement),
+    }
+    if clip_name:
+        params["clip_name"] = clip_name
+        params["clip_index"] = 0
+    else:
+        params["clip_index"] = _to_zero_based(clip_index, "clip_index")
+    return params
+
+
+def _clip_ref(track_index: int, clip_index: int, clip_name: str, arrangement: bool) -> str:
+    where = "arrangement clip" if arrangement else "slot"
+    return f"'{clip_name}' on track {track_index}" if clip_name else f"track {track_index}, {where} {clip_index}"
+
+
 @mcp.tool()
 def add_notes_to_clip(
     ctx: Context,
     track_index: int,
     clip_index: int,
-    notes: List[Dict[str, Union[int, float, bool]]]
+    notes: List[Dict[str, Union[int, float, bool]]],
+    replace: bool = False,
+    clip_name: str = "",
 ) -> str:
     """
-    Add MIDI notes to a clip.
+    Add MIDI notes to a session clip.
 
     Parameters:
     - track_index: Track number (1-based).
     - clip_index: Clip slot number (1-based).
-    - notes: List of note dictionaries, each with pitch, start_time, duration, velocity, and mute.
+    - notes: List of notes. Each has pitch (0-127, 60 = C3), start_time and
+      duration (in beats from the clip start), velocity (1-127) and mute.
+      Optional on Live 11+: probability (0-1), velocity_deviation (-127..127),
+      release_velocity (0-127).
+    - replace: If True, remove all existing notes first (rewrite the clip).
+    - clip_name: Clip name (alternative to clip_index).
     """
     try:
         ableton = get_ableton_connection()
-        ti = _to_zero_based(track_index, "track_index")
-        ci = _to_zero_based(clip_index, "clip_index")
-        result = ableton.send_command("add_notes_to_clip", {
-            "track_index": ti,
-            "clip_index": ci,
-            "notes": notes
-        })
-        return f"Added {len(notes)} notes to clip at track {track_index}, slot {clip_index}"
+        params = _clip_target(track_index, clip_index, clip_name, False)
+        params["notes"] = notes
+        params["replace"] = replace
+        result = ableton.send_command("add_notes_to_clip", params)
+        msg = f"Added {result.get('note_count', len(notes))} notes to {_clip_ref(track_index, clip_index, clip_name, False)}"
+        if replace:
+            msg += f" (replaced {result.get('removed', 0)} existing notes)"
+        return msg
     except Exception as e:
         logger.error(f"Error adding notes to clip: {str(e)}")
         return f"Error adding notes to clip: {str(e)}"
+
+
+@mcp.tool()
+def add_notes_to_arrangement_clip(
+    ctx: Context,
+    track_index: int,
+    notes: List[Dict[str, Union[int, float, bool]]],
+    clip_index: int = 1,
+    clip_name: str = "",
+    replace: bool = False,
+) -> str:
+    """
+    Add MIDI notes to an arrangement clip (create one first with
+    create_arrangement_midi_clip).
+
+    Parameters:
+    - track_index: Track number (1-based).
+    - notes: Same format as add_notes_to_clip; start_time is in beats from the
+      clip's start, not from the song start.
+    - clip_index: Arrangement clip number on the track (1-based, as listed by
+      get_arrangement_info).
+    - clip_name: Clip name (alternative to clip_index).
+    - replace: If True, remove all existing notes first.
+    """
+    try:
+        ableton = get_ableton_connection()
+        params = _clip_target(track_index, clip_index, clip_name, True)
+        params["notes"] = notes
+        params["replace"] = replace
+        result = ableton.send_command("add_notes_to_arrangement_clip", params)
+        msg = f"Added {result.get('note_count', len(notes))} notes to {_clip_ref(track_index, clip_index, clip_name, True)}"
+        if replace:
+            msg += f" (replaced {result.get('removed', 0)} existing notes)"
+        return msg + _ARRANGEMENT_TIP
+    except Exception as e:
+        logger.error(f"Error adding notes to arrangement clip: {str(e)}")
+        return f"Error adding notes to arrangement clip: {str(e)}"
+
+
+@mcp.tool()
+def get_clip_notes(
+    ctx: Context,
+    track_index: int,
+    clip_index: int = 1,
+    clip_name: str = "",
+    arrangement: bool = False,
+) -> str:
+    """
+    Read the MIDI notes in a clip, so you can inspect, vary or fix a part.
+
+    Returns a summary line and a JSON list of notes in the same format
+    add_notes_to_clip accepts (plus a readable note name), so the notes can be
+    edited and written back with replace=True.
+
+    Parameters:
+    - track_index: Track number (1-based).
+    - clip_index: Session slot (1-based), or arrangement clip number if arrangement=True.
+    - clip_name: Clip name (alternative to clip_index).
+    - arrangement: Read an arrangement clip instead of a session clip.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command(
+            "get_clip_notes", _clip_target(track_index, clip_index, clip_name, arrangement))
+        notes = result.get("notes", [])
+        for n in notes:
+            n["name"] = note_name(int(n["pitch"]))
+        header = (f"Clip '{result.get('clip_name', '')}' on '{result.get('track_name', '')}': "
+                  f"{len(notes)} notes, length {result.get('length')} beats "
+                  f"(loop {result.get('loop_start')}-{result.get('loop_end')})")
+        return header + "\n" + json.dumps(notes, indent=1)
+    except Exception as e:
+        logger.error(f"Error reading clip notes: {str(e)}")
+        return f"Error reading clip notes: {str(e)}"
+
+
+@mcp.tool()
+def remove_clip_notes(
+    ctx: Context,
+    track_index: int,
+    clip_index: int = 1,
+    clip_name: str = "",
+    arrangement: bool = False,
+    pitch_from: int = 0,
+    pitch_to: int = 127,
+    start_beat: float = 0.0,
+    end_beat: float = 0.0,
+) -> str:
+    """
+    Remove MIDI notes from a clip. With no ranges given, clears the clip.
+
+    Parameters:
+    - track_index: Track number (1-based).
+    - clip_index: Session slot (1-based), or arrangement clip number if arrangement=True.
+    - clip_name: Clip name (alternative to clip_index).
+    - arrangement: Edit an arrangement clip instead of a session clip.
+    - pitch_from / pitch_to: Inclusive MIDI pitch range (default all, 0-127).
+    - start_beat / end_beat: Remove notes starting in [start_beat, end_beat),
+      in beats from the clip start. end_beat 0 = to the end of the clip.
+    """
+    try:
+        ableton = get_ableton_connection()
+        params = _clip_target(track_index, clip_index, clip_name, arrangement)
+        params.update({
+            "pitch_from": pitch_from,
+            "pitch_to": pitch_to,
+            "time_from": start_beat,
+            "time_to": end_beat if end_beat > 0 else None,
+        })
+        result = ableton.send_command("remove_clip_notes", params)
+        return f"Removed {result.get('removed', 0)} notes from {_clip_ref(track_index, clip_index, clip_name, arrangement)}"
+    except Exception as e:
+        logger.error(f"Error removing clip notes: {str(e)}")
+        return f"Error removing clip notes: {str(e)}"
+
+
+@mcp.tool()
+def transpose_clip_notes(
+    ctx: Context,
+    track_index: int,
+    semitones: int,
+    clip_index: int = 1,
+    clip_name: str = "",
+    arrangement: bool = False,
+) -> str:
+    """
+    Transpose every note in a clip by a number of semitones (12 = one octave up).
+
+    Parameters:
+    - track_index: Track number (1-based).
+    - semitones: Positive = up, negative = down.
+    - clip_index: Session slot (1-based), or arrangement clip number if arrangement=True.
+    - clip_name: Clip name (alternative to clip_index).
+    - arrangement: Edit an arrangement clip instead of a session clip.
+    """
+    try:
+        ableton = get_ableton_connection()
+        params = _clip_target(track_index, clip_index, clip_name, arrangement)
+        params["semitones"] = semitones
+        result = ableton.send_command("transpose_clip_notes", params)
+        return (f"Transposed {result.get('note_count', 0)} notes by {semitones:+d} semitones "
+                f"in {_clip_ref(track_index, clip_index, clip_name, arrangement)}")
+    except Exception as e:
+        logger.error(f"Error transposing clip notes: {str(e)}")
+        return f"Error transposing clip notes: {str(e)}"
+
+
+@mcp.tool()
+def quantize_clip_notes(
+    ctx: Context,
+    track_index: int,
+    grid: str = "1/16",
+    strength: float = 1.0,
+    quantize_ends: bool = False,
+    clip_index: int = 1,
+    clip_name: str = "",
+    arrangement: bool = False,
+) -> str:
+    """
+    Quantize note start times in a clip to a grid.
+
+    Parameters:
+    - track_index: Track number (1-based).
+    - grid: One of 1/1, 1/2, 1/4, 1/8, 1/16, 1/32, or triplets 1/4t, 1/8t,
+      1/16t, 1/32t.
+    - strength: 0.0-1.0; 1.0 snaps fully, 0.5 moves notes halfway to the grid.
+    - quantize_ends: Also snap note ends (changes durations).
+    - clip_index: Session slot (1-based), or arrangement clip number if arrangement=True.
+    - clip_name: Clip name (alternative to clip_index).
+    - arrangement: Edit an arrangement clip instead of a session clip.
+    """
+    try:
+        grid_beats = _QUANTIZE_GRIDS.get(grid.strip().lower())
+        if grid_beats is None:
+            return f"Error: unknown grid '{grid}'. Use one of: {', '.join(_QUANTIZE_GRIDS)}"
+        ableton = get_ableton_connection()
+        params = _clip_target(track_index, clip_index, clip_name, arrangement)
+        params.update({"grid": grid_beats, "strength": strength, "quantize_ends": quantize_ends})
+        result = ableton.send_command("quantize_clip_notes", params)
+        return (f"Quantized {result.get('note_count', 0)} notes to {grid} at "
+                f"{int(round(result.get('strength', strength) * 100))}% in "
+                f"{_clip_ref(track_index, clip_index, clip_name, arrangement)}")
+    except Exception as e:
+        logger.error(f"Error quantizing clip notes: {str(e)}")
+        return f"Error quantizing clip notes: {str(e)}"
 
 @mcp.tool()
 def set_clip_name(ctx: Context, track_index: int, clip_index: int, name: str) -> str:

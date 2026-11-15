@@ -69,7 +69,7 @@ def test_server_waits_longer_than_remote_script():
 
 
 # Handlers that exist in the Remote Script but have no MCP tool yet.
-_NOT_YET_EXPOSED = {"add_notes_to_arrangement_clip"}
+_NOT_YET_EXPOSED = set()
 
 
 def test_every_remote_command_is_used_by_the_server():
