@@ -207,276 +207,159 @@ class AbletonMCP(ControlSurface):
                 pass
             self.log_message("Client handler stopped")
     
-    def _process_command(self, command):
-        """Process a command from the client and return a response"""
-        command_type = command.get("type", "")
-        params = command.get("params", {})
-        
-        # Initialize response
-        response = {
-            "status": "success",
-            "result": {}
-        }
-        
-        try:
-            # Route the command to the appropriate handler
-            if command_type == "get_session_info":
-                response["result"] = self._get_session_info()
-            elif command_type == "get_track_info":
-                track_index = params.get("track_index", 0)
-                response["result"] = self._get_track_info(track_index)
-            # Commands that modify Live's state should be scheduled on the main thread
-            elif command_type in ["create_midi_track", "create_audio_track", "set_track_name",
-                                 "create_clip", "add_notes_to_clip", "set_clip_name",
-                                 "set_tempo", "fire_clip", "stop_clip",
-                                 "start_playback", "stop_playback", "load_browser_item",
-                                 "set_song_time", "set_arrangement_loop", "jump_to_cue",
-                                 "create_cue_point", "delete_cue_point",
-                                 "create_arrangement_clip", "create_arrangement_audio_clip",
-                                 "duplicate_to_arrangement", "delete_arrangement_clip",
-                                 "set_arrangement_clip_property",
-                                 "set_view", "control_arrangement_view",
-                                 "manage_clip_automation",
-                                 "add_notes_to_arrangement_clip",
-                                 "set_device_parameter", "set_device_enabled",
-                                 "delete_device", "navigate_preset",
-                                 "delete_track",
-                                 "set_track_volume", "set_track_panning"]:
-                # Use a thread-safe approach with a response queue
-                response_queue = queue.Queue()
-                
-                # Define a function to execute on the main thread
-                def main_thread_task():
-                    try:
-                        result = None
-                        if command_type == "create_midi_track":
-                            index = params.get("index", -1)
-                            result = self._create_midi_track(index)
-                        elif command_type == "create_audio_track":
-                            index = params.get("index", -1)
-                            result = self._create_audio_track(index)
-                        elif command_type == "set_track_name":
-                            track_index = params.get("track_index", 0)
-                            name = params.get("name", "")
-                            result = self._set_track_name(track_index, name)
-                        elif command_type == "create_clip":
-                            track_index = params.get("track_index", 0)
-                            clip_index = params.get("clip_index", 0)
-                            length = params.get("length", 4.0)
-                            result = self._create_clip(track_index, clip_index, length)
-                        elif command_type == "add_notes_to_clip":
-                            track_index = params.get("track_index", 0)
-                            clip_index = params.get("clip_index", 0)
-                            notes = params.get("notes", [])
-                            result = self._add_notes_to_clip(track_index, clip_index, notes)
-                        elif command_type == "set_clip_name":
-                            track_index = params.get("track_index", 0)
-                            clip_index = params.get("clip_index", 0)
-                            name = params.get("name", "")
-                            result = self._set_clip_name(track_index, clip_index, name)
-                        elif command_type == "set_tempo":
-                            tempo = params.get("tempo", 120.0)
-                            result = self._set_tempo(tempo)
-                        elif command_type == "fire_clip":
-                            track_index = params.get("track_index", 0)
-                            clip_index = params.get("clip_index", 0)
-                            result = self._fire_clip(track_index, clip_index)
-                        elif command_type == "stop_clip":
-                            track_index = params.get("track_index", 0)
-                            clip_index = params.get("clip_index", 0)
-                            result = self._stop_clip(track_index, clip_index)
-                        elif command_type == "start_playback":
-                            result = self._start_playback()
-                        elif command_type == "stop_playback":
-                            result = self._stop_playback()
-                        elif command_type == "load_instrument_or_effect":
-                            track_index = params.get("track_index", 0)
-                            uri = params.get("uri", "")
-                            result = self._load_instrument_or_effect(track_index, uri)
-                        elif command_type == "load_browser_item":
-                            track_index = params.get("track_index", 0)
-                            item_uri = params.get("item_uri", "")
-                            result = self._load_browser_item(track_index, item_uri)
-                        elif command_type == "set_song_time":
-                            time_val = params.get("time", 0.0)
-                            result = self._set_song_time(time_val)
-                        elif command_type == "set_arrangement_loop":
-                            enabled = params.get("enabled", True)
-                            start = params.get("start", None)
-                            length = params.get("length", None)
-                            result = self._set_arrangement_loop(enabled, start, length)
-                        elif command_type == "jump_to_cue":
-                            direction = params.get("direction", None)
-                            name = params.get("name", None)
-                            result = self._jump_to_cue(direction, name)
-                        elif command_type == "create_cue_point":
-                            time_val = params.get("time", 0.0)
-                            name = params.get("name", "")
-                            result = self._create_cue_point(time_val, name)
-                        elif command_type == "delete_cue_point":
-                            time_val = params.get("time", 0.0)
-                            result = self._delete_cue_point(time_val)
-                        elif command_type == "create_arrangement_clip":
-                            ti = params.get("track_index", 0)
-                            pos = params.get("position", 0.0)
-                            length = params.get("length", 4.0)
-                            result = self._create_arrangement_clip(ti, pos, length)
-                        elif command_type == "create_arrangement_audio_clip":
-                            ti = params.get("track_index", 0)
-                            pos = params.get("position", 0.0)
-                            fp = params.get("file_path", "")
-                            result = self._create_arrangement_audio_clip(ti, pos, fp)
-                        elif command_type == "duplicate_to_arrangement":
-                            ti = params.get("track_index", 0)
-                            ci = params.get("clip_index", 0)
-                            dt = params.get("destination_time", 0.0)
-                            result = self._duplicate_to_arrangement(ti, ci, dt)
-                        elif command_type == "delete_arrangement_clip":
-                            ti = params.get("track_index", 0)
-                            ci = params.get("clip_index", None)
-                            cn = params.get("clip_name", None)
-                            result = self._delete_arrangement_clip(ti, ci, cn)
-                        elif command_type == "set_arrangement_clip_property":
-                            ti = params.get("track_index", 0)
-                            ci = params.get("clip_index", 0)
-                            prop = params.get("property", "")
-                            val = params.get("value", None)
-                            cn = params.get("clip_name", None)
-                            result = self._set_arrangement_clip_property(ti, ci, prop, val, cn)
-                        elif command_type == "set_view":
-                            vn = params.get("view_name", "Arranger")
-                            result = self._set_view(vn)
-                        elif command_type == "control_arrangement_view":
-                            action = params.get("action", "")
-                            ti = params.get("track_index", 0)
-                            result = self._control_arrangement_view(action, ti)
-                        elif command_type == "manage_clip_automation":
-                            ti = params.get("track_index", 0)
-                            ci = params.get("clip_index", 0)
-                            action = params.get("action", "create")
-                            pn = params.get("parameter_name", "")
-                            cn = params.get("clip_name", None)
-                            result = self._manage_clip_automation(ti, ci, action, pn, cn)
-                        elif command_type == "add_notes_to_arrangement_clip":
-                            ti = params.get("track_index", 0)
-                            ci = params.get("clip_index", 0)
-                            notes = params.get("notes", [])
-                            result = self._add_notes_to_arrangement_clip(ti, ci, notes)
-                        # Device modifying commands
-                        elif command_type == "set_device_parameter":
-                            ti = params.get("track_index", 0)
-                            di = params.get("device_index", 0)
-                            ci = params.get("chain_index", None)
-                            pn = params.get("parameter_name", None)
-                            pi = params.get("parameter_index", None)
-                            val = params.get("value", 0.0)
-                            result = self._set_device_parameter(ti, di, ci, pn, pi, val)
-                        elif command_type == "set_device_enabled":
-                            ti = params.get("track_index", 0)
-                            di = params.get("device_index", 0)
-                            ci = params.get("chain_index", None)
-                            enabled = params.get("enabled", True)
-                            result = self._set_device_enabled(ti, di, ci, enabled)
-                        elif command_type == "delete_device":
-                            ti = params.get("track_index", 0)
-                            di = params.get("device_index", 0)
-                            result = self._delete_device(ti, di)
-                        elif command_type == "delete_track":
-                            ti = params.get("track_index", 0)
-                            result = self._delete_track(ti)
-                        elif command_type == "set_track_volume":
-                            ti = params.get("track_index", 0)
-                            volume = params.get("volume", 0.85)
-                            result = self._set_track_volume(ti, volume)
-                        elif command_type == "set_track_panning":
-                            ti = params.get("track_index", 0)
-                            panning = params.get("panning", 0.0)
-                            result = self._set_track_panning(ti, panning)
-                        elif command_type == "navigate_preset":
-                            ti = params.get("track_index", 0)
-                            di = params.get("device_index", 0)
-                            ci = params.get("chain_index", None)
-                            direction = params.get("direction", "current")
-                            result = self._navigate_preset(ti, di, ci, direction)
+    # ── Command dispatch ─────────────────────────────────────────────
+    #
+    # Every command the MCP server can send is listed exactly once in
+    # _command_table(). All handlers run on Live's main thread: the Live
+    # Object Model is not thread-safe, so even reads must not run on the
+    # socket thread.
 
-                        # Put the result in the queue
-                        response_queue.put({"status": "success", "result": result})
-                    except Exception as e:
-                        self.log_message("Error in main thread task: " + str(e))
-                        self.log_message(traceback.format_exc())
-                        response_queue.put({"status": "error", "message": str(e)})
-                
-                # Schedule the task to run on the main thread
-                try:
-                    self.schedule_message(0, main_thread_task)
-                except AssertionError:
-                    # If we're already on the main thread, execute directly
-                    main_thread_task()
-                
-                # Wait for the response with a timeout
-                try:
-                    task_response = response_queue.get(timeout=10.0)
-                    if task_response.get("status") == "error":
-                        response["status"] = "error"
-                        response["message"] = task_response.get("message", "Unknown error")
-                    else:
-                        response["result"] = task_response.get("result", {})
-                except queue.Empty:
-                    response["status"] = "error"
-                    response["message"] = "Timeout waiting for operation to complete"
-            elif command_type == "get_track_volume":
-                ti = params.get("track_index", 0)
-                response["result"] = self._get_track_volume(ti)
-            elif command_type == "get_browser_item":
-                uri = params.get("uri", None)
-                path = params.get("path", None)
-                response["result"] = self._get_browser_item(uri, path)
-            elif command_type == "get_browser_categories":
-                category_type = params.get("category_type", "all")
-                response["result"] = self._get_browser_categories(category_type)
-            elif command_type == "get_browser_items":
-                path = params.get("path", "")
-                item_type = params.get("item_type", "all")
-                response["result"] = self._get_browser_items(path, item_type)
-            # Add the new browser commands
-            elif command_type == "get_browser_tree":
-                category_type = params.get("category_type", "all")
-                response["result"] = self.get_browser_tree(category_type)
-            elif command_type == "get_browser_items_at_path":
-                path = params.get("path", "")
-                response["result"] = self.get_browser_items_at_path(path)
-            elif command_type == "get_arrangement_info":
-                track_index = params.get("track_index", -1)
-                response["result"] = self._get_arrangement_info(track_index)
-            elif command_type == "get_cue_points":
-                response["result"] = self._get_cue_points()
-            # Device read-only commands
-            elif command_type == "get_device_parameters":
-                ti = params.get("track_index", 0)
-                di = params.get("device_index", 0)
-                ci = params.get("chain_index", None)
-                show_all = params.get("show_all", False)
-                response["result"] = self._get_device_parameters(ti, di, ci, show_all)
-            elif command_type == "get_chain_info":
-                ti = params.get("track_index", 0)
-                di = params.get("device_index", 0)
-                ci = params.get("chain_index", None)
-                response["result"] = self._get_chain_info(ti, di, ci)
-            elif command_type == "get_drum_pad_info":
-                ti = params.get("track_index", 0)
-                di = params.get("device_index", 0)
-                response["result"] = self._get_drum_pad_info(ti, di)
+    # Default seconds to wait for a main-thread task before reporting a timeout.
+    DEFAULT_TASK_TIMEOUT = 10.0
+    # Commands that can legitimately take longer (browser walks, device loads).
+    LONG_TASK_TIMEOUT = 30.0
+    LONG_COMMANDS = frozenset([
+        "load_browser_item",
+        "get_browser_tree",
+        "get_browser_items_at_path",
+    ])
+
+    def _command_table(self):
+        """Map command name -> handler(params). The single source of truth."""
+        def g(p, key, default=None):
+            return p.get(key, default)
+
+        return {
+            # Session / transport
+            "get_session_info": lambda p: self._get_session_info(),
+            "set_tempo": lambda p: self._set_tempo(g(p, "tempo", 120.0)),
+            "start_playback": lambda p: self._start_playback(),
+            "stop_playback": lambda p: self._stop_playback(),
+            "set_song_time": lambda p: self._set_song_time(g(p, "time", 0.0)),
+            "set_arrangement_loop": lambda p: self._set_arrangement_loop(
+                g(p, "enabled", True), g(p, "start"), g(p, "length")),
+            "get_cue_points": lambda p: self._get_cue_points(),
+            "jump_to_cue": lambda p: self._jump_to_cue(g(p, "direction"), g(p, "name")),
+            "create_cue_point": lambda p: self._create_cue_point(
+                g(p, "time", 0.0), g(p, "name", "")),
+            "delete_cue_point": lambda p: self._delete_cue_point(g(p, "time", 0.0)),
+            # Tracks
+            "get_track_info": lambda p: self._get_track_info(g(p, "track_index", 0)),
+            "create_midi_track": lambda p: self._create_midi_track(g(p, "index", -1)),
+            "create_audio_track": lambda p: self._create_audio_track(g(p, "index", -1)),
+            "set_track_name": lambda p: self._set_track_name(
+                g(p, "track_index", 0), g(p, "name", "")),
+            "delete_track": lambda p: self._delete_track(g(p, "track_index", 0)),
+            "get_track_volume": lambda p: self._get_track_volume(g(p, "track_index", 0)),
+            "set_track_volume": lambda p: self._set_track_volume(
+                g(p, "track_index", 0), g(p, "volume", 0.85)),
+            "set_track_panning": lambda p: self._set_track_panning(
+                g(p, "track_index", 0), g(p, "panning", 0.0)),
+            # Session clips
+            "create_clip": lambda p: self._create_clip(
+                g(p, "track_index", 0), g(p, "clip_index", 0), g(p, "length", 4.0)),
+            "add_notes_to_clip": lambda p: self._add_notes_to_clip(
+                g(p, "track_index", 0), g(p, "clip_index", 0), g(p, "notes", [])),
+            "set_clip_name": lambda p: self._set_clip_name(
+                g(p, "track_index", 0), g(p, "clip_index", 0), g(p, "name", "")),
+            "fire_clip": lambda p: self._fire_clip(g(p, "track_index", 0), g(p, "clip_index", 0)),
+            "stop_clip": lambda p: self._stop_clip(g(p, "track_index", 0), g(p, "clip_index", 0)),
+            # Browser
+            "get_browser_tree": lambda p: self.get_browser_tree(g(p, "category_type", "all")),
+            "get_browser_items_at_path": lambda p: self.get_browser_items_at_path(g(p, "path", "")),
+            "load_browser_item": lambda p: self._load_browser_item(
+                g(p, "track_index", 0), g(p, "item_uri", "")),
+            # Arrangement
+            "get_arrangement_info": lambda p: self._get_arrangement_info(g(p, "track_index", -1)),
+            "create_arrangement_clip": lambda p: self._create_arrangement_clip(
+                g(p, "track_index", 0), g(p, "position", 0.0), g(p, "length", 4.0)),
+            "create_arrangement_audio_clip": lambda p: self._create_arrangement_audio_clip(
+                g(p, "track_index", 0), g(p, "position", 0.0), g(p, "file_path", "")),
+            "duplicate_to_arrangement": lambda p: self._duplicate_to_arrangement(
+                g(p, "track_index", 0), g(p, "clip_index", 0), g(p, "destination_time", 0.0)),
+            "delete_arrangement_clip": lambda p: self._delete_arrangement_clip(
+                g(p, "track_index", 0), g(p, "clip_index"), g(p, "clip_name")),
+            "set_arrangement_clip_property": lambda p: self._set_arrangement_clip_property(
+                g(p, "track_index", 0), g(p, "clip_index", 0), g(p, "property", ""),
+                g(p, "value"), g(p, "clip_name")),
+            "manage_clip_automation": lambda p: self._manage_clip_automation(
+                g(p, "track_index", 0), g(p, "clip_index", 0), g(p, "action", "create"),
+                g(p, "parameter_name", ""), g(p, "clip_name")),
+            "add_notes_to_arrangement_clip": lambda p: self._add_notes_to_arrangement_clip(
+                g(p, "track_index", 0), g(p, "clip_index", 0), g(p, "notes", [])),
+            # Views
+            "set_view": lambda p: self._set_view(g(p, "view_name", "Arranger")),
+            "control_arrangement_view": lambda p: self._control_arrangement_view(
+                g(p, "action", ""), g(p, "track_index", 0)),
+            # Devices
+            "get_device_parameters": lambda p: self._get_device_parameters(
+                g(p, "track_index", 0), g(p, "device_index", 0), g(p, "chain_index"),
+                g(p, "show_all", False)),
+            "set_device_parameter": lambda p: self._set_device_parameter(
+                g(p, "track_index", 0), g(p, "device_index", 0), g(p, "chain_index"),
+                g(p, "parameter_name"), g(p, "parameter_index"), g(p, "value", 0.0)),
+            "set_device_enabled": lambda p: self._set_device_enabled(
+                g(p, "track_index", 0), g(p, "device_index", 0), g(p, "chain_index"),
+                g(p, "enabled", True)),
+            "delete_device": lambda p: self._delete_device(
+                g(p, "track_index", 0), g(p, "device_index", 0)),
+            "navigate_preset": lambda p: self._navigate_preset(
+                g(p, "track_index", 0), g(p, "device_index", 0), g(p, "chain_index"),
+                g(p, "direction", "current")),
+            "get_chain_info": lambda p: self._get_chain_info(
+                g(p, "track_index", 0), g(p, "device_index", 0), g(p, "chain_index")),
+            "get_drum_pad_info": lambda p: self._get_drum_pad_info(
+                g(p, "track_index", 0), g(p, "device_index", 0)),
+        }
+
+    def _process_command(self, command):
+        """Run a command on Live's main thread and return a response dict."""
+        command_type = command.get("type", "")
+        params = command.get("params", {}) or {}
+
+        handler = self._command_table().get(command_type)
+        if handler is None:
+            return {"status": "error", "message": "Unknown command: " + command_type}
+
+        response_queue = queue.Queue()
+        # Lets a task that has not started yet be skipped once the caller gave up,
+        # so a timed-out request does not later run behind the caller's back.
+        state = {"cancelled": False, "started": False}
+
+        def main_thread_task():
+            if state["cancelled"]:
+                self.log_message("Skipping cancelled command: " + command_type)
+                return
+            state["started"] = True
+            try:
+                result = handler(params)
+                response_queue.put({"status": "success", "result": result if result is not None else {}})
+            except Exception as e:
+                self.log_message("Error in main thread task {0}: {1}".format(command_type, str(e)))
+                self.log_message(traceback.format_exc())
+                response_queue.put({"status": "error", "message": str(e)})
+
+        try:
+            self.schedule_message(0, main_thread_task)
+        except AssertionError:
+            # Already on the main thread: run directly.
+            main_thread_task()
+
+        timeout = (self.LONG_TASK_TIMEOUT if command_type in self.LONG_COMMANDS
+                   else self.DEFAULT_TASK_TIMEOUT)
+        try:
+            return response_queue.get(timeout=timeout)
+        except queue.Empty:
+            state["cancelled"] = True
+            if state["started"]:
+                message = ("Timed out after {0:.0f}s waiting for '{1}'. It is still running "
+                           "inside Live and may complete; check the session state before "
+                           "retrying.").format(timeout, command_type)
             else:
-                response["status"] = "error"
-                response["message"] = "Unknown command: " + command_type
-        except Exception as e:
-            self.log_message("Error processing command: " + str(e))
-            self.log_message(traceback.format_exc())
-            response["status"] = "error"
-            response["message"] = str(e)
-        
-        return response
-    
+                message = ("Timed out after {0:.0f}s waiting for Live to run '{1}'. "
+                           "It was cancelled and will not run.").format(timeout, command_type)
+            return {"status": "error", "message": message}
+
     # Arrangement helper methods
 
     def _get_arrangement_clip_info(self, clip):
@@ -1022,88 +905,6 @@ class AbletonMCP(ControlSurface):
                     self.log_message("Error accessing browser attribute {0}: {1}".format(attr, str(e)))
 
         return None, normalized_root
-    
-    def _get_browser_item(self, uri, path):
-        """Get a browser item by URI or path"""
-        try:
-            # Access the application's browser instance instead of creating a new one
-            app = self.application()
-            if not app:
-                raise RuntimeError("Could not access Live application")
-                
-            result = {
-                "uri": uri,
-                "path": path,
-                "found": False
-            }
-            
-            # Try to find by URI first if provided
-            if uri:
-                item = self._find_browser_item_by_uri(app.browser, uri)
-                if item:
-                    result["found"] = True
-                    result["item"] = {
-                        "name": item.name,
-                        "is_folder": item.is_folder,
-                        "is_device": item.is_device,
-                        "is_loadable": item.is_loadable,
-                        "uri": item.uri
-                    }
-                    return result
-            
-            # If URI not provided or not found, try by path
-            if path:
-                # Parse the path and navigate to the specified item
-                path_parts = self._split_browser_path(path)
-                if not path_parts:
-                    result["error"] = "Invalid path"
-                    return result
-                
-                # Determine the root based on the first part
-                current_item, resolved_attr = self._resolve_browser_root_category(app.browser, path_parts[0])
-                if current_item is None:
-                    # Default to instruments if not specified
-                    current_item = app.browser.instruments
-                    # Don't skip the first part in this case
-                    path_parts = ["instruments"] + path_parts
-                elif resolved_attr != "instruments":
-                    # Keep path parts aligned with resolved root
-                    path_parts[0] = resolved_attr
-                
-                # Navigate through the path
-                for i in range(1, len(path_parts)):
-                    part = path_parts[i]
-                    if not part:  # Skip empty parts
-                        continue
-                    
-                    found = False
-                    for child in current_item.children:
-                        if child.name.lower() == part.lower():
-                            current_item = child
-                            found = True
-                            break
-                    
-                    if not found:
-                        result["error"] = "Path part '{0}' not found".format(part)
-                        return result
-                
-                # Found the item
-                result["found"] = True
-                result["item"] = {
-                    "name": current_item.name,
-                    "is_folder": current_item.is_folder,
-                    "is_device": current_item.is_device,
-                    "is_loadable": current_item.is_loadable,
-                    "uri": current_item.uri
-                }
-            
-            return result
-        except Exception as e:
-            self.log_message("Error getting browser item: " + str(e))
-            self.log_message(traceback.format_exc())
-            raise   
-    
-    
     
     def _load_browser_item(self, track_index, item_uri):
         """Load a browser item onto a track by its URI"""

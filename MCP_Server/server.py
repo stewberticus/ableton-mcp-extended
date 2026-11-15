@@ -32,6 +32,45 @@ logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("AbletonMCPServer")
 
+
+# ── Command registry ─────────────────────────────────────────────
+#
+# Commands that change Live's state. After these the server waits briefly
+# so the next read sees the change. Every name here (and every name passed
+# to send_command) must have a handler in the Remote Script's
+# _command_table(); tests/unit/test_command_parity.py enforces this.
+MODIFYING_COMMANDS = frozenset([
+    "create_midi_track", "create_audio_track", "set_track_name", "delete_track",
+    "create_clip", "add_notes_to_clip", "set_clip_name",
+    "set_tempo", "fire_clip", "stop_clip",
+    "start_playback", "stop_playback", "load_browser_item",
+    "set_song_time", "set_arrangement_loop", "jump_to_cue",
+    "create_cue_point", "delete_cue_point",
+    "create_arrangement_clip", "create_arrangement_audio_clip",
+    "duplicate_to_arrangement", "delete_arrangement_clip",
+    "set_arrangement_clip_property",
+    "set_view", "control_arrangement_view",
+    "manage_clip_automation",
+    "add_notes_to_arrangement_clip",
+    "set_device_parameter", "set_device_enabled",
+    "delete_device", "navigate_preset",
+    "set_track_volume", "set_track_panning",
+])
+
+# Commands that may take a long time inside Live (browser walks, loads).
+# The Remote Script allows these 30s; the server waits a bit longer so it
+# receives the Remote Script's own timeout message instead of cutting off.
+LONG_COMMANDS = frozenset([
+    "load_browser_item", "get_browser_tree", "get_browser_items_at_path",
+])
+DEFAULT_RESPONSE_TIMEOUT = 15.0
+LONG_RESPONSE_TIMEOUT = 40.0
+
+
+class AbletonCommandError(Exception):
+    """Live received the command and reported an error."""
+
+
 @dataclass
 class AbletonConnection:
     host: str
@@ -63,11 +102,11 @@ class AbletonConnection:
             finally:
                 self.sock = None
 
-    def receive_full_response(self, sock, buffer_size=8192):
+    def receive_full_response(self, sock, buffer_size=8192, timeout=DEFAULT_RESPONSE_TIMEOUT):
         """Receive the complete response, potentially in multiple chunks"""
         chunks = []
-        sock.settimeout(15.0)  # Increased timeout for operations that might take longer
-        
+        sock.settimeout(timeout)
+
         try:
             while True:
                 try:
@@ -76,9 +115,9 @@ class AbletonConnection:
                         if not chunks:
                             raise Exception("Connection closed before receiving any data")
                         break
-                    
+
                     chunks.append(chunk)
-                    
+
                     # Check if we've received a complete JSON object
                     try:
                         data = b''.join(chunks)
@@ -90,107 +129,86 @@ class AbletonConnection:
                         continue
                 except socket.timeout:
                     logger.warning("Socket timeout during chunked receive")
-                    break
+                    raise
                 except (ConnectionError, BrokenPipeError, ConnectionResetError) as e:
                     logger.error(f"Socket connection error during receive: {str(e)}")
                     raise
         except Exception as e:
             logger.error(f"Error during receive: {str(e)}")
             raise
-            
-        # If we get here, we either timed out or broke out of the loop
+
+        # The peer closed the connection after sending partial data.
         if chunks:
             data = b''.join(chunks)
-            logger.info(f"Returning data after receive completion ({len(data)} bytes)")
             try:
                 json.loads(data.decode('utf-8'))
                 return data
             except json.JSONDecodeError:
                 raise Exception("Incomplete JSON response received")
-        else:
-            raise Exception("No data received")
+        raise Exception("No data received")
+
+    def _drop_socket(self):
+        """Close and forget the socket so the next call reconnects cleanly."""
+        if self.sock:
+            try:
+                self.sock.close()
+            except Exception:
+                pass
+        self.sock = None
 
     def send_command(self, command_type: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Send a command to Ableton and return the response"""
+        """Send a command to Ableton and return the response.
+
+        Raises AbletonCommandError when Live reports an error (the connection
+        stays open), and a plain Exception for transport failures (the
+        connection is dropped and re-established on the next call).
+        """
         if not self.sock and not self.connect():
             raise ConnectionError("Not connected to Ableton")
-        
+
         command = {
             "type": command_type,
             "params": params or {}
         }
-        
-        # Check if this is a state-modifying command
-        is_modifying_command = command_type in [
-            "create_midi_track", "create_audio_track", "set_track_name",
-            "create_clip", "add_notes_to_clip", "set_clip_name",
-            "set_tempo", "fire_clip", "stop_clip", "set_device_parameter",
-            "start_playback", "stop_playback", "load_instrument_or_effect",
-            "set_song_time", "set_arrangement_loop", "jump_to_cue",
-            "create_cue_point", "delete_cue_point",
-            "create_arrangement_clip", "create_arrangement_audio_clip",
-            "duplicate_to_arrangement", "delete_arrangement_clip",
-            "set_arrangement_clip_property",
-            "set_view", "control_arrangement_view",
-            "manage_clip_automation",
-            "add_notes_to_arrangement_clip",
-            "set_device_parameter", "set_device_enabled",
-            "delete_device", "navigate_preset",
-            "set_track_volume", "set_track_panning",
-        ]
-        
+        timeout = (LONG_RESPONSE_TIMEOUT if command_type in LONG_COMMANDS
+                   else DEFAULT_RESPONSE_TIMEOUT)
+
         try:
             logger.info(f"Sending command: {command_type} with params: {params}")
-            
-            # Send the command
             self.sock.sendall(json.dumps(command).encode('utf-8'))
-            logger.info(f"Command sent, waiting for response...")
-            
-            # For state-modifying commands, add a small delay to give Ableton time to process
-            if is_modifying_command:
-                import time
-                time.sleep(0.1)  # 100ms delay
-            
-            # Set timeout based on command type
-            timeout = 15.0 if is_modifying_command else 10.0
-            self.sock.settimeout(timeout)
-            
-            # Receive the response
-            response_data = self.receive_full_response(self.sock)
-            logger.info(f"Received {len(response_data)} bytes of data")
-            
-            # Parse the response
+
+            response_data = self.receive_full_response(self.sock, timeout=timeout)
             response = json.loads(response_data.decode('utf-8'))
             logger.info(f"Response parsed, status: {response.get('status', 'unknown')}")
-            
-            if response.get("status") == "error":
-                logger.error(f"Ableton error: {response.get('message')}")
-                raise Exception(response.get("message", "Unknown error from Ableton"))
-            
-            # For state-modifying commands, add another small delay after receiving response
-            if is_modifying_command:
-                import time
-                time.sleep(0.1)  # 100ms delay
-            
-            return response.get("result", {})
         except socket.timeout:
             logger.error("Socket timeout while waiting for response from Ableton")
-            self.sock = None
-            raise Exception("Timeout waiting for Ableton response")
+            self._drop_socket()
+            raise Exception(
+                f"Timeout after {timeout:.0f}s waiting for Ableton to answer '{command_type}'"
+            )
         except (ConnectionError, BrokenPipeError, ConnectionResetError) as e:
             logger.error(f"Socket connection error: {str(e)}")
-            self.sock = None
+            self._drop_socket()
             raise Exception(f"Connection to Ableton lost: {str(e)}")
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON response from Ableton: {str(e)}")
-            if 'response_data' in locals() and response_data:
-                logger.error(f"Raw response (first 200 bytes): {response_data[:200]}")
-            self.sock = None
+            self._drop_socket()
             raise Exception(f"Invalid response from Ableton: {str(e)}")
         except Exception as e:
             logger.error(f"Error communicating with Ableton: {str(e)}")
-            self.sock = None
+            self._drop_socket()
             raise Exception(f"Communication error with Ableton: {str(e)}")
+
+        if response.get("status") == "error":
+            # Live rejected the command; the transport is fine, keep the socket.
+            logger.error(f"Ableton error: {response.get('message')}")
+            raise AbletonCommandError(response.get("message", "Unknown error from Ableton"))
+
+        if command_type in MODIFYING_COMMANDS:
+            # Give Live a moment to settle before the next read reflects the change.
+            time.sleep(0.1)
+
+        return response.get("result", {})
 
 @asynccontextmanager
 async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
@@ -330,17 +348,35 @@ def _invalidate_external_plugin_cache() -> None:
         _external_plugin_cache["plugins"] = None
         _external_plugin_cache["built_at"] = 0.0
 
+def _socket_is_alive(sock) -> bool:
+    """Return False if the socket is missing or the peer has closed it.
+
+    Peeks without blocking: no data pending means alive; an empty read means
+    the Remote Script closed the connection (for example Live restarted).
+    """
+    if sock is None:
+        return False
+    try:
+        sock.setblocking(False)
+        try:
+            data = sock.recv(1, socket.MSG_PEEK)
+        finally:
+            sock.setblocking(True)
+        return data != b''
+    except (BlockingIOError, InterruptedError):
+        return True
+    except OSError:
+        return False
+
+
 def get_ableton_connection():
     """Get or create a persistent Ableton connection"""
     global _ableton_connection
     
     if _ableton_connection is not None:
         try:
-            # Test the connection with a simple ping
-            # We'll try to send an empty message, which should fail if the connection is dead
-            # but won't affect Ableton if it's alive
-            _ableton_connection.sock.settimeout(1.0)
-            _ableton_connection.sock.sendall(b'')
+            if not _socket_is_alive(_ableton_connection.sock):
+                raise ConnectionError("socket closed by Ableton")
             return _ableton_connection
         except Exception as e:
             logger.warning(f"Existing connection is no longer valid: {str(e)}")
