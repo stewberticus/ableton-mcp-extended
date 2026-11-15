@@ -216,9 +216,9 @@ class AbletonMCP(ControlSurface):
     # ── Command dispatch ─────────────────────────────────────────────
     #
     # Every command the MCP server can send is listed exactly once in
-    # _command_table(). All handlers run on Live's main thread: the Live
-    # Object Model is not thread-safe, so even reads must not run on the
-    # socket thread.
+    # _command_table(). Handlers run on Live's main thread, because the Live
+    # Object Model is not thread-safe; the only exceptions are the pure
+    # browser reads in SOCKET_THREAD_COMMANDS (see there).
 
     # Default seconds to wait for a main-thread task before reporting a timeout.
     DEFAULT_TASK_TIMEOUT = 10.0
@@ -226,6 +226,15 @@ class AbletonMCP(ControlSurface):
     LONG_TASK_TIMEOUT = 30.0
     LONG_COMMANDS = frozenset([
         "load_browser_item",
+        "get_browser_tree",
+        "get_browser_items_at_path",
+    ])
+
+    # Pure browser reads stay on the socket thread, as they always have.
+    # Plugin and device discovery send hundreds of them in a row, and each
+    # main-thread task waits for Live's next UI tick, so routing them
+    # through schedule_message would turn a few-second scan into minutes.
+    SOCKET_THREAD_COMMANDS = frozenset([
         "get_browser_tree",
         "get_browser_items_at_path",
     ])
@@ -397,6 +406,14 @@ class AbletonMCP(ControlSurface):
         handler = self._command_table().get(command_type)
         if handler is None:
             return {"status": "error", "message": "Unknown command: " + command_type}
+
+        if command_type in self.SOCKET_THREAD_COMMANDS:
+            try:
+                result = handler(params)
+                return {"status": "success", "result": result if result is not None else {}}
+            except Exception as e:
+                self.log_message("Error in {0}: {1}".format(command_type, str(e)))
+                return {"status": "error", "message": str(e)}
 
         response_queue = queue.Queue()
         # Lets a task that has not started yet be skipped once the caller gave up,

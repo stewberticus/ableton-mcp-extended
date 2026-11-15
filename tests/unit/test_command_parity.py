@@ -99,3 +99,13 @@ class TestDispatch:
 
         scheduled[0]()  # Live gets round to it later
         assert calls == []
+
+
+def test_browser_reads_skip_the_main_thread_queue():
+    rs = AbletonMCP.__new__(AbletonMCP)
+    scheduled = []
+    rs.schedule_message = lambda delay, fn: scheduled.append(fn)
+    rs.get_browser_items_at_path = lambda path: {"path": path, "items": []}
+    resp = rs._process_command({"type": "get_browser_items_at_path", "params": {"path": "plugins"}})
+    assert resp == {"status": "success", "result": {"path": "plugins", "items": []}}
+    assert scheduled == []
