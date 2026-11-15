@@ -4,21 +4,6 @@ import sys
 import types
 
 
-# Mock Ableton's ControlSurface dependency before importing the Remote Script.
-_framework_module = types.ModuleType("_Framework")
-_control_surface_module = types.ModuleType("_Framework.ControlSurface")
-
-
-class _DummyControlSurface:
-    pass
-
-
-_control_surface_module.ControlSurface = _DummyControlSurface
-sys.modules["_Framework"] = _framework_module
-sys.modules["_Framework.ControlSurface"] = _control_surface_module
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-
 from AbletonMCP_Remote_Script import AbletonMCP  # noqa: E402
 
 
@@ -61,10 +46,12 @@ def test_split_browser_path_trims_and_drops_empty_parts():
     assert surface._split_browser_path("") == []
 
 
-def test_get_browser_item_resolves_instruments_root_typo_regression():
+def test_instruments_root_path_resolves_regression():
     # Regression test for old typo path check ("nstruments") that broke
-    # valid "instruments/..." paths.
-    pianos = _FakeItem("Pianos")
+    # valid "instruments/..." paths. (_get_browser_item was removed as dead
+    # code; the same resolution now lives in get_browser_items_at_path.)
+    grand = _FakeItem("Grand Piano", is_loadable=True)
+    pianos = _FakeItem("Pianos", children=[grand])
     browser = types.SimpleNamespace(
         instruments=_FakeItem("Instruments", children=[pianos]),
         sounds=_FakeItem("Sounds"),
@@ -76,11 +63,12 @@ def test_get_browser_item_resolves_instruments_root_typo_regression():
     surface = _make_surface_with_browser(browser)
 
     # A normal instruments path should now resolve correctly.
-    result = surface._get_browser_item(uri=None, path="instruments/Pianos")
+    result = surface.get_browser_items_at_path("instruments/Pianos")
 
     # The path lookup should find the expected child node.
-    assert result["found"] is True
-    assert result["item"]["name"] == "Pianos"
+    assert "error" not in result
+    assert result["name"] == "Pianos"
+    assert [i["name"] for i in result["items"]] == ["Grand Piano"]
 
 
 def test_get_browser_items_at_path_normalizes_hyphenated_audio_effects():

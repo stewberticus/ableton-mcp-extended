@@ -93,6 +93,8 @@ pip install -e .
 2. Create folder: `AbletonMCP`
 3. Copy `AbletonMCP_Remote_Script/__init__.py` into this folder
 
+   On macOS (or Git Bash on Windows) `scripts/install_remote_script.sh` does steps 1-3 for you, and is the easy way to update after a `git pull`. Restart Live afterwards.
+
 ### 3. **Configure Ableton**
 1. Open Ableton Live
 2. Go to **Preferences** → **Link, Tempo & MIDI**
@@ -101,7 +103,7 @@ pip install -e .
 
 ### 4. **Connect AI Assistant**
 
-**For Claude Desktop:**
+**For Claude Desktop** (add this entry to your existing config rather than replacing it):
 ```json
 {
   "mcpServers": {
@@ -233,7 +235,22 @@ This project includes several specialized components:
 ## Documentation
 
 - **[Installation Guide](INSTALLATION.md)** - Detailed setup instructions
+- **[Tool Reference](docs/TOOLS.md)** - Every MCP tool and its parameters
 - **[User Guide](README.md)** - What, which, and how  
+
+### Development
+
+```bash
+pip install -e ".[dev]"
+pytest tests/unit -q                       # unit tests, no Live needed
+python scripts/gen_tools_doc.py            # regenerate docs/TOOLS.md after changing tools
+scripts/install_remote_script.sh           # copy the Remote Script into Live
+```
+
+The MCP server (`MCP_Server/server.py`) and the Remote Script
+(`AbletonMCP_Remote_Script/__init__.py`) talk over a local socket. Every
+command name lives in the Remote Script's `_command_table()`, and
+`tests/unit/test_command_parity.py` fails if the two sides disagree.
 
 ---
 

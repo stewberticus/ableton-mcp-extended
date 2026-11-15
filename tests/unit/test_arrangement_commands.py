@@ -5,15 +5,7 @@ import os
 from unittest.mock import MagicMock, patch, call
 
 # Mock mcp dependencies before importing server module
-# Make @mcp.tool() a pass-through decorator so actual functions are preserved
-_mock_mcp_module = MagicMock()
-_mock_fastmcp = MagicMock()
-_mock_fastmcp.FastMCP.return_value.tool.return_value = lambda fn: fn
-sys.modules['mcp'] = _mock_mcp_module
-sys.modules['mcp.server'] = MagicMock()
-sys.modules['mcp.server.fastmcp'] = _mock_fastmcp
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from MCP_Server.server import (
     bar_to_beat, beat_to_bar,
@@ -130,10 +122,10 @@ class TestSetArrangementLoopCommand:
     @patch('MCP_Server.server._get_time_signature', return_value=(4, 4))
     @patch('MCP_Server.server.get_ableton_connection')
     def test_bar_range(self, mock_conn, mock_ts):
-        # Bars 4–8 in 4/4: start=12.0, length=16.0; verify correct loop region
+        # Bars 4-8 inclusive in 4/4: start=12.0, length=20.0 (five bars)
         mock_ableton = MagicMock()
         mock_ableton.send_command.return_value = {
-            "enabled": True, "start": 12.0, "length": 16.0}
+            "enabled": True, "start": 12.0, "length": 20.0}
         mock_conn.return_value = mock_ableton
 
         from MCP_Server.server import set_arrangement_loop
@@ -143,7 +135,7 @@ class TestSetArrangementLoopCommand:
         assert args[0][0] == "set_arrangement_loop"
         assert args[0][1]["enabled"] is True
         assert args[0][1]["start"] == 12.0
-        assert args[0][1]["length"] == 16.0
+        assert args[0][1]["length"] == 20.0
 
 
 class TestJumpToCuePointCommand:
@@ -214,7 +206,7 @@ class TestCreateArrangementMidiClipCommand:
     @patch('MCP_Server.server._get_time_signature', return_value=(4, 4))
     @patch('MCP_Server.server.get_ableton_connection')
     def test_bar_range_converts(self, mock_conn, mock_ts):
-        # Track 1 → 0, bars 5–9 → position 16.0, length 16.0
+        # Track 1 -> 0, bars 5-8 inclusive -> position 16.0, length 16.0
         mock_ableton = MagicMock()
         mock_ableton.send_command.return_value = {
             "start_time": 16.0, "overlapped_clips": []}
@@ -222,7 +214,7 @@ class TestCreateArrangementMidiClipCommand:
 
         from MCP_Server.server import create_arrangement_midi_clip
         create_arrangement_midi_clip(
-            MagicMock(), track_index=1, start_bar=5, end_bar=9)
+            MagicMock(), track_index=1, start_bar=5, end_bar=8)
 
         args = mock_ableton.send_command.call_args
         assert args[0][0] == "create_arrangement_clip"
@@ -353,10 +345,10 @@ class TestSetArrangementClipPropertyCommand:
         assert mock_ableton.send_command.call_count == 1
 
     @patch('MCP_Server.server.get_ableton_connection')
-    def test_multiple_props_sends_multiple(self, mock_conn):
-        # Setting two properties should result in two separate RS commands
+    def test_multiple_props_sent_together(self, mock_conn):
+        # Several properties go in one command so the Remote Script can order them
         mock_ableton = MagicMock()
-        mock_ableton.send_command.return_value = {"property": "x", "value": True}
+        mock_ableton.send_command.return_value = {"properties": {"muted": True, "looping": False}}
         mock_conn.return_value = mock_ableton
 
         from MCP_Server.server import set_arrangement_clip_property
@@ -364,7 +356,11 @@ class TestSetArrangementClipPropertyCommand:
             MagicMock(), track_index=1, clip_index=1,
             muted=True, looping=False)
 
-        assert mock_ableton.send_command.call_count == 2
+        assert mock_ableton.send_command.call_count == 1
+        name, params = mock_ableton.send_command.call_args[0]
+        assert name == "set_clip_properties"
+        assert params["properties"] == {"muted": True, "looping": False}
+        assert params["arrangement"] is True
 
     @patch('MCP_Server.server.get_ableton_connection')
     def test_no_props_no_command(self, mock_conn):

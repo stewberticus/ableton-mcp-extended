@@ -6,22 +6,6 @@ import types
 from unittest.mock import MagicMock
 
 
-class _StubControlSurface:
-    def __init__(self, c_instance):
-        pass
-
-    def log_message(self, msg):
-        pass
-
-
-_framework = types.ModuleType("_Framework")
-_cs_module = types.ModuleType("_Framework.ControlSurface")
-_cs_module.ControlSurface = _StubControlSurface
-sys.modules.setdefault("_Framework", _framework)
-sys.modules.setdefault("_Framework.ControlSurface", _cs_module)
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-
 from AbletonMCP_Remote_Script import AbletonMCP  # noqa: E402
 
 
