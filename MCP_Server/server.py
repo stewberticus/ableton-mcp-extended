@@ -348,6 +348,23 @@ def beat_to_bar(beat: float, numerator: int = 4, denominator: int = 4) -> int:
     return int(beat / beats_per_bar) + 1
 
 
+def bar_range_length(start_bar: int, end_bar: int, numerator: int = 4, denominator: int = 4) -> float:
+    """Length in beats of the inclusive bar range start_bar..end_bar.
+
+    Bars 1-4 means four whole bars, matching how musicians say it.
+    """
+    if end_bar < start_bar:
+        raise ValueError(f"end_bar ({end_bar}) must be >= start_bar ({start_bar})")
+    return bar_to_beat(end_bar + 1, numerator, denominator) - bar_to_beat(start_bar, numerator, denominator)
+
+
+def format_bar_range(start: float, end: float, numerator: int = 4, denominator: int = 4) -> str:
+    """Describe [start, end) in beats as inclusive bars: "bars 1-4" or "bar 3"."""
+    first = beat_to_bar(start, numerator, denominator)
+    last = beat_to_bar(max(start, end - 1e-6), numerator, denominator)
+    return f"bar {first}" if first == last else f"bars {first}-{last}"
+
+
 # Global connection for resources
 _ableton_connection = None
 _EXTERNAL_PLUGIN_CACHE_TTL_SECONDS = 120.0
@@ -1897,8 +1914,7 @@ def get_arrangement_info(ctx: Context, track_index: int = 0) -> str:
         if transport.get("loop_enabled"):
             ls = transport.get("loop_start", 0)
             ll = transport.get("loop_length", 0)
-            lines.append(f"Loop: bars {beat_to_bar(ls, num, denom)}-"
-                         f"{beat_to_bar(ls + ll, num, denom)}")
+            lines.append(f"Loop: {format_bar_range(ls, ls + ll, num, denom)}")
 
         for t in result.get("tracks", []):
             clips = t.get("arrangement_clips", [])
@@ -1910,8 +1926,7 @@ def get_arrangement_info(ctx: Context, track_index: int = 0) -> str:
                 et = c.get("end_time", 0)
                 muted = " [MUTED]" if c.get("muted") else ""
                 lines.append(f"  {c.get('index', 0) + 1}. \"{c.get('name', '')}\" "
-                             f"bars {beat_to_bar(st, num, denom)}-"
-                             f"{beat_to_bar(et, num, denom)}{muted}")
+                             f"{format_bar_range(st, et, num, denom)}{muted}")
 
         return "\n".join(lines)
     except Exception as e:
@@ -1966,17 +1981,18 @@ def set_arrangement_loop(
     enabled: bool = True,
     start_bar: int = 0,
     end_bar: int = 0,
-    start_beat: float = 0.0,
-    length_beats: float = 0.0,
+    start_beat: float = None,
+    length_beats: float = None,
 ) -> str:
     """Enable/disable arrangement loop and set region.
 
     Parameters:
     - enabled: Whether loop is on.
-    - start_bar: Loop start (1-based). Takes precedence over start_beat.
-    - end_bar: Loop end (1-based). Used with start_bar to compute length.
-    - start_beat: Loop start in beats.
-    - length_beats: Loop length in beats.
+    - start_bar: First bar of the loop (1-based). Takes precedence over start_beat.
+    - end_bar: Last bar of the loop, inclusive (bars 1-4 = a 4-bar loop).
+      0 = keep the current length.
+    - start_beat: Loop start in beats (0 = song start). Leave unset to keep it.
+    - length_beats: Loop length in beats. Leave unset to keep it.
     """
     try:
         ableton = get_ableton_connection()
@@ -1986,12 +2002,16 @@ def set_arrangement_loop(
         length = None
         if start_bar > 0:
             start = bar_to_beat(start_bar, num, denom)
-            if end_bar > start_bar:
-                length = bar_to_beat(end_bar, num, denom) - start
+            if end_bar > 0:
+                length = bar_range_length(start_bar, end_bar, num, denom)
         else:
-            if start_beat > 0:
+            if start_beat is not None:
+                if start_beat < 0:
+                    raise ValueError("start_beat must be >= 0")
                 start = start_beat
-            if length_beats > 0:
+            if length_beats is not None:
+                if length_beats <= 0:
+                    raise ValueError("length_beats must be > 0")
                 length = length_beats
 
         params = {"enabled": enabled}
@@ -2004,8 +2024,7 @@ def set_arrangement_loop(
         state = "enabled" if result.get("enabled") else "disabled"
         ls = result.get("start", 0)
         ll = result.get("length", 0)
-        return (f"Loop {state}: bars {beat_to_bar(ls, num, denom)}-"
-                f"{beat_to_bar(ls + ll, num, denom)}")
+        return f"Loop {state}: {format_bar_range(ls, ls + ll, num, denom)}"
     except Exception as e:
         logger.error(f"Error setting arrangement loop: {str(e)}")
         return f"Error setting arrangement loop: {str(e)}"
@@ -2084,8 +2103,9 @@ def create_arrangement_midi_clip(
 
     Parameters:
     - track_index: Track number (1-based).
-    - start_bar: Start bar (1-based). Takes precedence over start_beat.
-    - end_bar: End bar (1-based). Used with start_bar to compute length.
+    - start_bar: First bar (1-based). Takes precedence over start_beat.
+    - end_bar: Last bar, inclusive (start_bar=5, end_bar=8 = a 4-bar clip).
+      0 = use length_beats.
     - start_beat: Start position in beats.
     - length_beats: Clip length in beats.
     - name: Optional clip name.
@@ -2096,8 +2116,8 @@ def create_arrangement_midi_clip(
 
         if start_bar > 0:
             position = bar_to_beat(start_bar, num, denom)
-            if end_bar > start_bar:
-                length = bar_to_beat(end_bar, num, denom) - position
+            if end_bar > 0:
+                length = bar_range_length(start_bar, end_bar, num, denom)
             else:
                 length = length_beats
         else:
@@ -2109,6 +2129,7 @@ def create_arrangement_midi_clip(
             "track_index": ti,
             "position": position,
             "length": length,
+            "name": name,
         })
 
         msg = (f"Created MIDI clip on track {track_index} at "

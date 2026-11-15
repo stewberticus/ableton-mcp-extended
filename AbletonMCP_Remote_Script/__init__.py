@@ -328,7 +328,8 @@ class AbletonMCP(ControlSurface):
             # Arrangement
             "get_arrangement_info": lambda p: self._get_arrangement_info(g(p, "track_index", -1)),
             "create_arrangement_clip": lambda p: self._create_arrangement_clip(
-                g(p, "track_index", 0), g(p, "position", 0.0), g(p, "length", 4.0)),
+                g(p, "track_index", 0), g(p, "position", 0.0), g(p, "length", 4.0),
+                g(p, "name", "")),
             "create_arrangement_audio_clip": lambda p: self._create_arrangement_audio_clip(
                 g(p, "track_index", 0), g(p, "position", 0.0), g(p, "file_path", "")),
             "duplicate_to_arrangement": lambda p: self._duplicate_to_arrangement(
@@ -1758,7 +1759,7 @@ class AbletonMCP(ControlSurface):
         if track == self._song.master_track:
             raise ValueError("Cannot create arrangement clips on master track")
 
-    def _create_arrangement_clip(self, track_index, position, length):
+    def _create_arrangement_clip(self, track_index, position, length, name=""):
         """Create MIDI clip in arrangement."""
         try:
             if track_index < 0 or track_index >= len(self._song.tracks):
@@ -1771,6 +1772,8 @@ class AbletonMCP(ControlSurface):
             result = {"start_time": position, "length": length, "is_midi": True}
             for clip in track.arrangement_clips:
                 if abs(clip.start_time - position) < 0.01:
+                    if name:
+                        clip.name = name
                     result = self._get_arrangement_clip_info(clip)
                     break
             result["overlapped_clips"] = overlapped

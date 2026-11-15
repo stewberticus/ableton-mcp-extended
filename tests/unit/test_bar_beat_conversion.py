@@ -117,3 +117,48 @@ class TestRoundTrip:
         for bar in range(1, 20):
             beat = bar_to_beat(bar, 6, 8)
             assert beat_to_bar(beat, 6, 8) == bar
+
+
+class TestInclusiveBarRanges:
+    """Bar ranges are inclusive: bars 1-4 is four bars."""
+
+    def test_four_bars(self):
+        from MCP_Server.server import bar_range_length
+        assert bar_range_length(1, 4) == 16.0
+
+    def test_single_bar(self):
+        from MCP_Server.server import bar_range_length
+        assert bar_range_length(3, 3) == 4.0
+
+    def test_three_four(self):
+        from MCP_Server.server import bar_range_length
+        assert bar_range_length(1, 2, 3, 4) == 6.0
+
+    def test_reversed_range_rejected(self):
+        import pytest
+        from MCP_Server.server import bar_range_length
+        with pytest.raises(ValueError):
+            bar_range_length(5, 4)
+
+    def test_format_four_bar_clip(self):
+        from MCP_Server.server import format_bar_range
+        # A 4-bar clip at bar 1 used to print as "bars 1-5".
+        assert format_bar_range(0.0, 16.0) == "bars 1-4"
+
+    def test_format_short_clip(self):
+        from MCP_Server.server import format_bar_range
+        assert format_bar_range(8.0, 10.0) == "bar 3"
+
+
+def test_loop_can_start_at_beat_zero():
+    from unittest.mock import MagicMock, patch
+    from MCP_Server.server import set_arrangement_loop
+    with patch('MCP_Server.server._get_time_signature', return_value=(4, 4)), \
+            patch('MCP_Server.server.get_ableton_connection') as mock_conn:
+        ableton = MagicMock()
+        ableton.send_command.return_value = {"enabled": True, "start": 0.0, "length": 8.0}
+        mock_conn.return_value = ableton
+        set_arrangement_loop(MagicMock(), start_beat=0.0, length_beats=8.0)
+        params = ableton.send_command.call_args[0][1]
+        assert params["start"] == 0.0
+        assert params["length"] == 8.0

@@ -130,10 +130,10 @@ class TestSetArrangementLoopCommand:
     @patch('MCP_Server.server._get_time_signature', return_value=(4, 4))
     @patch('MCP_Server.server.get_ableton_connection')
     def test_bar_range(self, mock_conn, mock_ts):
-        # Bars 4–8 in 4/4: start=12.0, length=16.0; verify correct loop region
+        # Bars 4-8 inclusive in 4/4: start=12.0, length=20.0 (five bars)
         mock_ableton = MagicMock()
         mock_ableton.send_command.return_value = {
-            "enabled": True, "start": 12.0, "length": 16.0}
+            "enabled": True, "start": 12.0, "length": 20.0}
         mock_conn.return_value = mock_ableton
 
         from MCP_Server.server import set_arrangement_loop
@@ -143,7 +143,7 @@ class TestSetArrangementLoopCommand:
         assert args[0][0] == "set_arrangement_loop"
         assert args[0][1]["enabled"] is True
         assert args[0][1]["start"] == 12.0
-        assert args[0][1]["length"] == 16.0
+        assert args[0][1]["length"] == 20.0
 
 
 class TestJumpToCuePointCommand:
@@ -214,7 +214,7 @@ class TestCreateArrangementMidiClipCommand:
     @patch('MCP_Server.server._get_time_signature', return_value=(4, 4))
     @patch('MCP_Server.server.get_ableton_connection')
     def test_bar_range_converts(self, mock_conn, mock_ts):
-        # Track 1 → 0, bars 5–9 → position 16.0, length 16.0
+        # Track 1 -> 0, bars 5-8 inclusive -> position 16.0, length 16.0
         mock_ableton = MagicMock()
         mock_ableton.send_command.return_value = {
             "start_time": 16.0, "overlapped_clips": []}
@@ -222,7 +222,7 @@ class TestCreateArrangementMidiClipCommand:
 
         from MCP_Server.server import create_arrangement_midi_clip
         create_arrangement_midi_clip(
-            MagicMock(), track_index=1, start_bar=5, end_bar=9)
+            MagicMock(), track_index=1, start_bar=5, end_bar=8)
 
         args = mock_ableton.send_command.call_args
         assert args[0][0] == "create_arrangement_clip"
