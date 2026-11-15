@@ -256,7 +256,14 @@ class AbletonMCP(ControlSurface):
             "create_audio_track": lambda p: self._create_audio_track(g(p, "index", -1)),
             "set_track_name": lambda p: self._set_track_name(
                 g(p, "track_index", 0), g(p, "name", "")),
-            "delete_track": lambda p: self._delete_track(g(p, "track_index", 0)),
+            "delete_track": lambda p: self._delete_track(
+                g(p, "track_index", 0), g(p, "delete_group_contents", False)),
+            "delete_return_track": lambda p: self._delete_return_track(g(p, "return_index", 0)),
+            "duplicate_track": lambda p: self._duplicate_track(g(p, "track_index", 0)),
+            "set_track_color": lambda p: self._set_track_color(
+                g(p, "track_index", 0), g(p, "color", 0)),
+            "set_track_fold": lambda p: self._set_track_fold(
+                g(p, "track_index", 0), g(p, "folded", True)),
             # Mixer
             "get_track_volume": lambda p: self._get_track_volume(
                 g(p, "track_index", 0), g(p, "track_type", "track")),
@@ -1991,8 +1998,24 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error deleting device: " + str(e))
             raise
 
-    def _delete_track(self, track_index):
-        """Delete a track from the session."""
+    def _grouped_children(self, group):
+        """Session tracks nested (at any depth) inside a group track."""
+        children = []
+        for t in self._song.tracks:
+            parent = getattr(t, "group_track", None)
+            while parent is not None:
+                if parent == group:
+                    children.append(t)
+                    break
+                parent = getattr(parent, "group_track", None)
+        return children
+
+    def _delete_track(self, track_index, delete_group_contents=False):
+        """Delete a session track.
+
+        Deleting a group track in Live also removes the tracks inside it, so
+        that needs delete_group_contents=True.
+        """
         try:
             if len(self._song.tracks) <= 1:
                 raise ValueError(
@@ -2002,15 +2025,61 @@ class AbletonMCP(ControlSurface):
             if track_index < 0 or track_index >= len(self._song.tracks):
                 raise IndexError("Track index {0} out of range (0-{1})".format(
                     track_index, len(self._song.tracks) - 1))
-            track_name = self._song.tracks[track_index].name
+            track = self._song.tracks[track_index]
+            track_name = track.name
+            children = []
+            if getattr(track, "is_foldable", False):
+                children = [t.name for t in self._grouped_children(track)]
+                if children and not delete_group_contents:
+                    raise ValueError(
+                        "'{0}' is a group track containing {1} track(s): {2}. Deleting it "
+                        "deletes them too. Pass delete_group_contents=True to confirm.".format(
+                            track_name, len(children), ", ".join(children)))
+                if len(children) + 1 >= len(self._song.tracks):
+                    raise ValueError("Deleting group '{0}' would remove every session track. "
+                                     "Create another track first.".format(track_name))
             self._song.delete_track(track_index)
             return {
                 "deleted_track": track_name,
+                "deleted_group_contents": children,
                 "remaining_tracks": len(self._song.tracks),
             }
         except Exception as e:
             self.log_message("Error deleting track: " + str(e))
             raise
+
+    def _delete_return_track(self, return_index):
+        returns = list(self._song.return_tracks)
+        if return_index < 0 or return_index >= len(returns):
+            raise IndexError("Return track index {0} out of range (0-{1})".format(
+                return_index, len(returns) - 1))
+        name = returns[return_index].name
+        self._song.delete_return_track(return_index)
+        return {"deleted_return_track": name, "remaining_return_tracks": len(self._song.return_tracks)}
+
+    def _duplicate_track(self, track_index):
+        if track_index < 0 or track_index >= len(self._song.tracks):
+            raise IndexError("Track index {0} out of range (0-{1})".format(
+                track_index, len(self._song.tracks) - 1))
+        self._song.duplicate_track(track_index)
+        # Live inserts the copy after the original (after a group's contents
+        # for a group track).
+        source = self._song.tracks[track_index]
+        offset = 1 + (len(self._grouped_children(source)) if getattr(source, "is_foldable", False) else 0)
+        new_index = track_index + offset
+        return {"index": new_index, "name": self._song.tracks[new_index].name}
+
+    def _set_track_color(self, track_index, color):
+        track = self._device_track(track_index, "track")
+        track.color = int(color)
+        return {"track_name": track.name, "color": track.color}
+
+    def _set_track_fold(self, track_index, folded):
+        track = self._device_track(track_index, "track")
+        if not getattr(track, "is_foldable", False):
+            raise ValueError("Track '{0}' is not a group track".format(track.name))
+        track.fold_state = bool(folded)
+        return {"track_name": track.name, "folded": bool(track.fold_state)}
 
     def _navigate_preset(self, track_index, device_index, chain_index=None, direction="current",
                          track_type="track"):

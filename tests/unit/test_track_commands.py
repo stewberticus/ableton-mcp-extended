@@ -67,9 +67,11 @@ class TestDeleteTrackBehavior:
     def test_delete_by_name_resolves_and_deletes(self, mock_conn):
         mock_ableton = MagicMock()
         mock_ableton.send_command.side_effect = [
-            {"track_count": 3},  # get_session_info
-            {"name": "Drums"},   # get_track_info index 0
-            {"name": "Bass"},    # get_track_info index 1
+            {"track_count": 3, "tracks": [  # get_session_info
+                {"index": 0, "name": "Drums"},
+                {"index": 1, "name": "Bass"},
+                {"index": 2, "name": "Keys"},
+            ]},
             {"deleted_track": "Bass", "remaining_tracks": 2},  # delete_track
         ]
         mock_conn.return_value = mock_ableton

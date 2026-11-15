@@ -51,6 +51,7 @@ MODIFYING_COMMANDS = frozenset([
     "set_clip_properties", "delete_clip", "duplicate_clip_to_slot",
     "create_scene", "duplicate_scene", "delete_scene", "set_scene_name",
     "fire_scene", "stop_all_clips",
+    "delete_return_track", "duplicate_track", "set_track_color", "set_track_fold",
     "set_view", "control_arrangement_view",
     "manage_clip_automation",
     "add_notes_to_arrangement_clip",
@@ -2785,12 +2786,17 @@ def delete_track(
     ctx: Context,
     track_index: int = 0,
     track_name: str = "",
+    delete_group_contents: bool = False,
 ) -> str:
     """Delete a track from the Ableton session.
+
+    Every track after it moves up by one, so re-check indices afterwards.
 
     Parameters:
     - track_index: Track number (1-based). Use 0 to resolve by name instead.
     - track_name: Track name (alternative to track_index). If both are given, track_index takes priority.
+    - delete_group_contents: Required to delete a group track that still
+      contains tracks (Live deletes the contained tracks with it).
     """
     try:
         ableton = get_ableton_connection()
@@ -2805,30 +2811,109 @@ def delete_track(
                 "Create a new track before deleting."
             )
 
-        # Resolve by name if no index given
         if track_index <= 0:
             if not track_name:
                 return "Error: provide either track_index (1-based) or track_name."
-            matched_index = None
-            for i in range(track_count):
-                t = ableton.send_command("get_track_info", {"track_index": i})
-                if t.get("name", "").lower() == track_name.lower():
-                    matched_index = i
-                    break
-            if matched_index is None:
+            matches = [t["index"] for t in info.get("tracks", [])
+                       if t.get("name", "").lower() == track_name.lower()]
+            if not matches:
                 return f"Error: No track named '{track_name}' found."
-            ti = matched_index
+            if len(matches) > 1:
+                numbers = ", ".join(str(i + 1) for i in matches)
+                return f"Error: {len(matches)} tracks are named '{track_name}' (tracks {numbers}). Use track_index."
+            ti = matches[0]
         else:
             ti = _to_zero_based(track_index, "track_index")
 
-        result = ableton.send_command("delete_track", {"track_index": ti})
-        return "Deleted track '{0}'. {1} tracks remaining.".format(
+        result = ableton.send_command("delete_track", {
+            "track_index": ti, "delete_group_contents": delete_group_contents})
+        msg = "Deleted track '{0}'. {1} tracks remaining.".format(
             result.get("deleted_track", "unknown"),
             result.get("remaining_tracks", "?"),
         )
+        contents = result.get("deleted_group_contents") or []
+        if contents:
+            msg += f" Also deleted the group's tracks: {', '.join(contents)}."
+        return msg
     except Exception as e:
         logger.error(f"Error deleting track: {str(e)}")
         return f"Error deleting track: {str(e)}"
+
+
+@mcp.tool()
+def delete_return_track(ctx: Context, return_index: int) -> str:
+    """Delete a return track. Sends to it are removed from every track.
+
+    Parameters:
+    - return_index: Return track number (1-based: 1 = A, 2 = B, ...).
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("delete_return_track", {
+            "return_index": _to_zero_based(return_index, "return_index")})
+        return (f"Deleted return track '{result.get('deleted_return_track', '')}'. "
+                f"{result.get('remaining_return_tracks', '?')} return tracks remain.")
+    except Exception as e:
+        logger.error(f"Error deleting return track: {str(e)}")
+        return f"Error deleting return track: {str(e)}"
+
+
+@mcp.tool()
+def duplicate_track(ctx: Context, track_index: int) -> str:
+    """Duplicate a track with its devices and clips. The copy goes right after it.
+
+    Parameters:
+    - track_index: Track number (1-based).
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("duplicate_track", {
+            "track_index": _to_zero_based(track_index, "track_index")})
+        return (f"Duplicated track {track_index} as track {result.get('index', 0) + 1} "
+                f"'{result.get('name', '')}'. Tracks after it moved down by one.")
+    except Exception as e:
+        logger.error(f"Error duplicating track: {str(e)}")
+        return f"Error duplicating track: {str(e)}"
+
+
+@mcp.tool()
+def set_track_color(ctx: Context, track_index: int, color: Union[int, str]) -> str:
+    """Set a track's color.
+
+    Parameters:
+    - track_index: Track number (1-based).
+    - color: RGB as an int (0xFF0000) or hex string ("#FF0000"). Live snaps
+      it to the nearest color in its palette.
+    """
+    try:
+        if isinstance(color, str):
+            color = int(color.strip().lstrip("#"), 16)
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_track_color", {
+            "track_index": _to_zero_based(track_index, "track_index"), "color": int(color)})
+        return f"Set '{result.get('track_name', '?')}' color to #{int(result.get('color', color)):06X}"
+    except Exception as e:
+        logger.error(f"Error setting track color: {str(e)}")
+        return f"Error setting track color: {str(e)}"
+
+
+@mcp.tool()
+def set_group_folded(ctx: Context, track_index: int, folded: bool = True) -> str:
+    """Fold (collapse) or unfold a group track.
+
+    Parameters:
+    - track_index: Group track number (1-based).
+    - folded: True to fold, False to unfold.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_track_fold", {
+            "track_index": _to_zero_based(track_index, "track_index"), "folded": folded})
+        state = "folded" if result.get("folded", folded) else "unfolded"
+        return f"Group '{result.get('track_name', '?')}' {state}"
+    except Exception as e:
+        logger.error(f"Error folding group: {str(e)}")
+        return f"Error folding group: {str(e)}"
 
 
 @mcp.tool()
