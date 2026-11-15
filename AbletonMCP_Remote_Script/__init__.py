@@ -249,6 +249,17 @@ class AbletonMCP(ControlSurface):
             "create_cue_point": lambda p: self._create_cue_point(
                 g(p, "time", 0.0), g(p, "name", "")),
             "delete_cue_point": lambda p: self._delete_cue_point(g(p, "time", 0.0)),
+            "get_transport_state": lambda p: self._get_transport_state(),
+            "set_record_state": lambda p: self._set_record_state(
+                g(p, "arrangement_record"), g(p, "session_record"), g(p, "overdub"),
+                g(p, "automation_record")),
+            "capture_midi": lambda p: self._capture_midi(g(p, "destination", 0)),
+            "set_metronome": lambda p: self._set_metronome(g(p, "enabled", True)),
+            "set_launch_quantization": lambda p: self._set_launch_quantization(g(p, "index", 4)),
+            "set_time_signature": lambda p: self._set_time_signature(
+                g(p, "numerator", 4), g(p, "denominator", 4)),
+            "undo": lambda p: self._undo(False),
+            "redo": lambda p: self._undo(True),
             # Tracks
             "get_track_info": lambda p: self._get_track_info(
                 g(p, "track_index", 0), g(p, "track_type", "track")),
@@ -1171,6 +1182,108 @@ class AbletonMCP(ControlSurface):
         except Exception as e:
             self.log_message("Error stopping playback: " + str(e))
             raise
+
+    # ── Recording and transport ──────────────────────────────────────
+
+    # Index order of Live.Song.Quantization (Live's launch quantization enum).
+    QUANTIZATION_NAMES = ["none", "8 bars", "4 bars", "2 bars", "1 bar", "1/2", "1/2t",
+                          "1/4", "1/4t", "1/8", "1/8t", "1/16", "1/16t", "1/32"]
+
+    def _enum_value(self, enum_path, index):
+        """Return Live's enum member for an int when the Live module exposes it."""
+        enum_type = Live
+        for part in enum_path:
+            enum_type = getattr(enum_type, part, None) if enum_type is not None else None
+        values = getattr(enum_type, "values", None)
+        if values and index in values:
+            return values[index]
+        return index
+
+    def _get_transport_state(self):
+        song = self._song
+        q = getattr(song, "clip_trigger_quantization", None)
+        try:
+            q_index = int(q)
+        except Exception:
+            q_index = None
+        return {
+            "is_playing": song.is_playing,
+            "tempo": song.tempo,
+            "signature_numerator": song.signature_numerator,
+            "signature_denominator": song.signature_denominator,
+            "current_time": song.current_song_time,
+            "arrangement_record": bool(getattr(song, "record_mode", False)),
+            "session_record": bool(getattr(song, "session_record", False)),
+            "arrangement_overdub": bool(getattr(song, "arrangement_overdub", False)),
+            "session_automation_record": bool(getattr(song, "session_automation_record", False)),
+            "metronome": bool(getattr(song, "metronome", False)),
+            "loop_enabled": song.loop,
+            "launch_quantization": (self.QUANTIZATION_NAMES[q_index]
+                                    if q_index is not None and 0 <= q_index < len(self.QUANTIZATION_NAMES)
+                                    else None),
+            "can_undo": bool(getattr(song, "can_undo", False)),
+            "can_redo": bool(getattr(song, "can_redo", False)),
+            "can_capture_midi": bool(getattr(song, "can_capture_midi", False)),
+        }
+
+    def _set_record_state(self, arrangement_record=None, session_record=None,
+                          overdub=None, automation_record=None):
+        song = self._song
+        if arrangement_record is not None:
+            song.record_mode = bool(arrangement_record)
+        if session_record is not None:
+            song.session_record = bool(session_record)
+        if overdub is not None:
+            song.arrangement_overdub = bool(overdub)
+        if automation_record is not None:
+            song.session_automation_record = bool(automation_record)
+        return self._get_transport_state()
+
+    def _capture_midi(self, destination=0):
+        song = self._song
+        if not hasattr(song, "capture_midi"):
+            raise ValueError("Capture MIDI needs Live 10 or newer")
+        if not getattr(song, "can_capture_midi", True):
+            raise ValueError("Nothing to capture: play some MIDI into an armed or monitored track first")
+        try:
+            song.capture_midi(int(destination))
+        except TypeError:
+            song.capture_midi()
+        return {"captured": True}
+
+    def _set_metronome(self, enabled):
+        self._song.metronome = bool(enabled)
+        return {"metronome": bool(self._song.metronome)}
+
+    def _set_launch_quantization(self, index):
+        if index < 0 or index >= len(self.QUANTIZATION_NAMES):
+            raise ValueError("Quantization index out of range")
+        self._song.clip_trigger_quantization = self._enum_value(("Song", "Quantization"), index)
+        return {"launch_quantization": self.QUANTIZATION_NAMES[index]}
+
+    def _set_time_signature(self, numerator, denominator):
+        numerator, denominator = int(numerator), int(denominator)
+        if not 1 <= numerator <= 99:
+            raise ValueError("Numerator must be 1-99")
+        if denominator not in (1, 2, 4, 8, 16):
+            raise ValueError("Denominator must be 1, 2, 4, 8 or 16")
+        self._song.signature_numerator = numerator
+        self._song.signature_denominator = denominator
+        return {"signature_numerator": self._song.signature_numerator,
+                "signature_denominator": self._song.signature_denominator}
+
+    def _undo(self, redo=False):
+        song = self._song
+        if redo:
+            if not song.can_redo:
+                raise ValueError("Nothing to redo")
+            song.redo()
+        else:
+            if not song.can_undo:
+                raise ValueError("Nothing to undo")
+            song.undo()
+        return {"done": "redo" if redo else "undo",
+                "can_undo": bool(song.can_undo), "can_redo": bool(song.can_redo)}
 
     # ── Scenes ───────────────────────────────────────────────────────
 

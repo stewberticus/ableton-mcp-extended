@@ -52,6 +52,8 @@ MODIFYING_COMMANDS = frozenset([
     "create_scene", "duplicate_scene", "delete_scene", "set_scene_name",
     "fire_scene", "stop_all_clips",
     "delete_return_track", "duplicate_track", "set_track_color", "set_track_fold",
+    "set_record_state", "capture_midi", "set_metronome", "set_launch_quantization",
+    "set_time_signature", "undo", "redo",
     "set_view", "control_arrangement_view",
     "manage_clip_automation",
     "add_notes_to_arrangement_clip",
@@ -1178,6 +1180,158 @@ def stop_playback(ctx: Context) -> str:
     except Exception as e:
         logger.error(f"Error stopping playback: {str(e)}")
         return f"Error stopping playback: {str(e)}"
+
+# ── Recording and transport tools ─────────────────────────────────
+
+_LAUNCH_QUANTIZATION = ["none", "8 bars", "4 bars", "2 bars", "1 bar", "1/2", "1/2t",
+                        "1/4", "1/4t", "1/8", "1/8t", "1/16", "1/16t", "1/32"]
+
+
+@mcp.tool()
+def get_transport_state(ctx: Context) -> str:
+    """Show transport and recording state: playing, tempo, time signature,
+    record/overdub/automation switches, metronome, launch quantization and
+    whether undo/redo/capture are available."""
+    try:
+        ableton = get_ableton_connection()
+        return json.dumps(ableton.send_command("get_transport_state"), indent=2)
+    except Exception as e:
+        logger.error(f"Error getting transport state: {str(e)}")
+        return f"Error getting transport state: {str(e)}"
+
+
+@mcp.tool()
+def set_record_state(
+    ctx: Context,
+    arrangement_record: bool = None,
+    session_record: bool = None,
+    overdub: bool = None,
+    automation_record: bool = None,
+) -> str:
+    """Turn recording switches on or off. Only the switches you pass change.
+
+    Recording needs an armed track (set_track_arm) to capture anything.
+
+    Parameters:
+    - arrangement_record: Arrangement Record button (records into the arrangement while playing).
+    - session_record: Session Record button (records into the selected/armed session slots).
+    - overdub: MIDI Arrangement Overdub.
+    - automation_record: Automation Arm.
+    """
+    try:
+        ableton = get_ableton_connection()
+        params = {k: v for k, v in dict(
+            arrangement_record=arrangement_record, session_record=session_record,
+            overdub=overdub, automation_record=automation_record).items() if v is not None}
+        if not params:
+            return "No recording switches specified."
+        state = ableton.send_command("set_record_state", params)
+        return ("Recording state: arrangement={arrangement_record}, session={session_record}, "
+                "overdub={arrangement_overdub}, automation={session_automation_record}").format(**state)
+    except Exception as e:
+        logger.error(f"Error setting record state: {str(e)}")
+        return f"Error setting record state: {str(e)}"
+
+
+@mcp.tool()
+def capture_midi(ctx: Context, destination: str = "auto") -> str:
+    """Capture MIDI: turn what was just played on an armed/monitored MIDI
+    track into a clip, even if recording was off.
+
+    Parameters:
+    - destination: "auto", "session" or "arrangement".
+    """
+    try:
+        dest = {"auto": 0, "session": 1, "arrangement": 2}.get(destination.lower())
+        if dest is None:
+            return "Error: destination must be auto, session or arrangement"
+        ableton = get_ableton_connection()
+        ableton.send_command("capture_midi", {"destination": dest})
+        return f"Captured MIDI ({destination})"
+    except Exception as e:
+        logger.error(f"Error capturing MIDI: {str(e)}")
+        return f"Error capturing MIDI: {str(e)}"
+
+
+@mcp.tool()
+def set_metronome(ctx: Context, enabled: bool = True) -> str:
+    """Turn the metronome on or off.
+
+    Parameters:
+    - enabled: True for on.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_metronome", {"enabled": enabled})
+        return f"Metronome {'on' if result.get('metronome', enabled) else 'off'}"
+    except Exception as e:
+        logger.error(f"Error setting metronome: {str(e)}")
+        return f"Error setting metronome: {str(e)}"
+
+
+@mcp.tool()
+def set_launch_quantization(ctx: Context, quantization: str = "1 bar") -> str:
+    """Set global clip launch quantization (when fired clips/scenes start).
+
+    Parameters:
+    - quantization: one of none, 8 bars, 4 bars, 2 bars, 1 bar, 1/2, 1/2t,
+      1/4, 1/4t, 1/8, 1/8t, 1/16, 1/16t, 1/32.
+    """
+    try:
+        key = quantization.strip().lower()
+        if key not in _LAUNCH_QUANTIZATION:
+            return f"Error: unknown quantization '{quantization}'. Use one of: {', '.join(_LAUNCH_QUANTIZATION)}"
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_launch_quantization",
+                                      {"index": _LAUNCH_QUANTIZATION.index(key)})
+        return f"Launch quantization set to {result.get('launch_quantization', key)}"
+    except Exception as e:
+        logger.error(f"Error setting launch quantization: {str(e)}")
+        return f"Error setting launch quantization: {str(e)}"
+
+
+@mcp.tool()
+def set_time_signature(ctx: Context, numerator: int = 4, denominator: int = 4) -> str:
+    """Set the song's time signature.
+
+    Parameters:
+    - numerator: Beats per bar (1-99).
+    - denominator: Note value of one beat (1, 2, 4, 8 or 16).
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_time_signature",
+                                      {"numerator": numerator, "denominator": denominator})
+        return (f"Time signature set to {result.get('signature_numerator', numerator)}/"
+                f"{result.get('signature_denominator', denominator)}")
+    except Exception as e:
+        logger.error(f"Error setting time signature: {str(e)}")
+        return f"Error setting time signature: {str(e)}"
+
+
+@mcp.tool()
+def undo(ctx: Context) -> str:
+    """Undo the last change in Live (same as Cmd/Ctrl+Z)."""
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("undo")
+        return f"Undone. More undo available: {result.get('can_undo')}"
+    except Exception as e:
+        logger.error(f"Error undoing: {str(e)}")
+        return f"Error undoing: {str(e)}"
+
+
+@mcp.tool()
+def redo(ctx: Context) -> str:
+    """Redo the last undone change in Live."""
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("redo")
+        return f"Redone. More redo available: {result.get('can_redo')}"
+    except Exception as e:
+        logger.error(f"Error redoing: {str(e)}")
+        return f"Error redoing: {str(e)}"
+
 
 @mcp.tool()
 def get_browser_tree(ctx: Context, category_type: str = "all") -> str:
