@@ -168,3 +168,22 @@ class TestServerMixer:
         out = server.set_track_mute(MagicMock(), 1, track_type="bus")
         assert "track_type" in out
         mock_conn.return_value.send_command.assert_not_called()
+
+
+def test_session_info_survives_a_raising_property():
+    class _Weird(_Track):
+        @property
+        def solo(self):
+            raise RuntimeError("no solo here")
+
+        @solo.setter
+        def solo(self, v):
+            pass
+
+    rs = _rs([_Weird("Odd"), _Track("Bass")], [_Track("A-Reverb")])
+    rs._song.tempo, rs._song.signature_numerator, rs._song.signature_denominator = 120, 4, 4
+    rs._song.is_playing, rs._song.scenes = False, []
+    info = rs._get_session_info()
+    assert info["tracks"][0]["solo"] is None
+    assert info["tracks"][1]["name"] == "Bass"
+    assert info["return_tracks"][0]["name"] == "A-Reverb"

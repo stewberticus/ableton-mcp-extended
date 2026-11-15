@@ -262,3 +262,34 @@ class TestServerNoteTools:
         assert server.note_name(60) == "C3"
         assert server.note_name(0) == "C-2"
         assert server.note_name(69) == "A3"
+
+
+class TestNoteWriteFailures:
+    def test_failed_replace_restores_original_notes(self, fake_live):
+        clip = _ModernClip(notes=[_Note(40, 0, 1), _Note(43, 1, 1)])
+        rs = _rs_with_clip(clip)
+        real_add = clip.add_new_notes
+        calls = {"n": 0}
+
+        def flaky_add(specs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("Live rejected the notes")
+            real_add(specs)
+        clip.add_new_notes = flaky_add
+
+        with pytest.raises(RuntimeError, match="rejected"):
+            rs._add_notes(0, 0, [{"pitch": 72}], replace=True)
+        assert sorted(n.pitch for n in clip.notes) == [40, 43]
+
+    def test_spec_signature_mismatch_falls_back_to_set_notes(self, monkeypatch):
+        class _StrictSpec:
+            def __init__(self, pitch, start_time, duration, velocity, mute):
+                pass
+        monkeypatch.setattr(rs_module, "Live", types.SimpleNamespace(
+            Clip=types.SimpleNamespace(MidiNoteSpecification=_StrictSpec)))
+        clip = _ModernClip()
+        written = []
+        clip.set_notes = lambda tuples: written.extend(tuples)
+        _rs_with_clip(clip)._add_notes(0, 0, [{"pitch": 60, "probability": 0.5}])
+        assert written == [(60, 0.0, 0.25, 100.0, False)]

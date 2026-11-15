@@ -553,12 +553,22 @@ class AbletonMCP(ControlSurface):
 
     def _group_info(self, track):
         """Return (is_grouped, group_index, group_name) for a session track."""
-        if not getattr(track, "is_grouped", False):
+        if not self._safe(lambda: track.is_grouped, False):
             return False, None, None
-        group = getattr(track, "group_track", None)
+        group = self._safe(lambda: track.group_track)
         if group is None:
             return True, None, None
         return True, self._track_index_of(group), group.name
+
+    @staticmethod
+    def _safe(getter, default=None):
+        """Read a Live property that may raise on some track types (e.g. the
+        master has no mute). get_session_info doubles as the connection
+        handshake, so one odd property must not fail the whole call."""
+        try:
+            return getter()
+        except Exception:
+            return default
 
     def _param_display(self, param):
         try:
@@ -610,13 +620,14 @@ class AbletonMCP(ControlSurface):
             for i, track in enumerate(self._song.tracks):
                 kind = self._track_kind(track)
                 grouped, group_index, group_name = self._group_info(track)
+                can_arm = kind != "group" and self._safe(lambda: track.can_be_armed, True)
                 tracks.append({
                     "index": i,
                     "name": track.name,
                     "type": kind,
-                    "mute": track.mute,
-                    "solo": track.solo,
-                    "arm": None if kind == "group" or not getattr(track, "can_be_armed", True) else track.arm,
+                    "mute": self._safe(lambda: track.mute),
+                    "solo": self._safe(lambda: track.solo),
+                    "arm": self._safe(lambda: track.arm) if can_arm else None,
                     "is_grouped": grouped,
                     "group_index": group_index,
                     "group_name": group_name,
@@ -629,8 +640,8 @@ class AbletonMCP(ControlSurface):
                     "volume": rt.mixer_device.volume.value,
                     "volume_display": self._param_display(rt.mixer_device.volume),
                     "panning": rt.mixer_device.panning.value,
-                    "mute": rt.mute,
-                    "solo": rt.solo,
+                    "mute": self._safe(lambda: rt.mute),
+                    "solo": self._safe(lambda: rt.solo),
                 })
             master = self._song.master_track.mixer_device
             return {
@@ -701,12 +712,13 @@ class AbletonMCP(ControlSurface):
                 "is_grouped": grouped,
                 "group_index": group_index,
                 "group_name": group_name,
-                "fold_state": bool(getattr(track, "fold_state", False)) if is_group else None,
-                "color": getattr(track, "color", None),
-                "mute": getattr(track, "mute", None),
-                "solo": getattr(track, "solo", None),
+                "fold_state": bool(self._safe(lambda: track.fold_state, False)) if is_group else None,
+                "color": self._safe(lambda: track.color),
+                "mute": None if kind == "master" else self._safe(lambda: track.mute),
+                "solo": None if kind == "master" else self._safe(lambda: track.solo),
                 "arm": (None if is_group or kind in ("return", "master")
-                        or not getattr(track, "can_be_armed", True) else track.arm),
+                        or not self._safe(lambda: track.can_be_armed, True)
+                        else self._safe(lambda: track.arm)),
                 "volume": track.mixer_device.volume.value,
                 "volume_display": self._param_display(track.mixer_device.volume),
                 "panning": track.mixer_device.panning.value,
@@ -965,12 +977,35 @@ class AbletonMCP(ControlSurface):
         cleaned = [self._clean_note(n) for n in notes]
         spec_cls = getattr(getattr(Live, "Clip", None), "MidiNoteSpecification", None) if Live else None
         if spec_cls is not None and hasattr(clip, "add_new_notes"):
-            clip.add_new_notes(tuple(spec_cls(**n) for n in cleaned))
-        else:
-            clip.set_notes(tuple(
-                (n["pitch"], n["start_time"], n["duration"], n["velocity"], n["mute"])
-                for n in cleaned))
+            try:
+                specs = tuple(spec_cls(**n) for n in cleaned)
+            except TypeError as e:
+                # Unexpected constructor signature: fall back to the classic
+                # API (loses probability / velocity deviation / release velocity).
+                self.log_message("MidiNoteSpecification rejected notes ({0}); using set_notes".format(e))
+                specs = None
+            if specs is not None:
+                clip.add_new_notes(specs)
+                return len(cleaned)
+        clip.set_notes(tuple(
+            (n["pitch"], n["start_time"], n["duration"], n["velocity"], n["mute"])
+            for n in cleaned))
         return len(cleaned)
+
+    def _replace_notes_safely(self, clip, new_notes):
+        """Remove every note and write new_notes; restore the old notes if writing fails."""
+        original = self._read_notes(clip)
+        removed = self._remove_notes(clip)
+        try:
+            self._write_notes(clip, new_notes)
+        except Exception:
+            try:
+                self._remove_notes(clip)
+                self._write_notes(clip, original)
+            except Exception as restore_error:
+                self.log_message("Could not restore notes after a failed write: " + str(restore_error))
+            raise
+        return removed
 
     def _read_notes(self, clip):
         """Return the clip's notes as dicts sorted by start time then pitch."""
@@ -1021,8 +1056,7 @@ class AbletonMCP(ControlSurface):
         """Replace every note with transform(note_dict); returns the new notes."""
         notes = self._read_notes(clip)
         new_notes = [transform(dict(n)) for n in notes]
-        self._remove_notes(clip)
-        self._write_notes(clip, new_notes)
+        self._replace_notes_safely(clip, new_notes)
         return new_notes
 
     def _get_clip_notes(self, track_index, clip_index, arrangement=False, clip_name=None):
@@ -1043,8 +1077,12 @@ class AbletonMCP(ControlSurface):
         # leave a replaced clip half-written.
         for n in notes:
             self._clean_note(n)
-        removed = self._remove_notes(clip) if replace else 0
-        added = self._write_notes(clip, notes)
+        if replace:
+            removed = self._replace_notes_safely(clip, notes)
+            added = len(notes)
+        else:
+            removed = 0
+            added = self._write_notes(clip, notes)
         return {"note_count": added, "removed": removed, "clip_name": clip.name}
 
     def _remove_clip_notes(self, track_index, clip_index, arrangement=False, clip_name=None,
