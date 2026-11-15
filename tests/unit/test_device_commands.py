@@ -52,6 +52,7 @@ class TestGetDeviceParameters:
             "track_index": 0, "track_type": "track",
             "device_index": 1,
             "chain_index": None,
+            "chain_device_index": 0,
             "show_all": True,
         })
         assert "Wavetable" in result
@@ -321,7 +322,7 @@ class TestNavigateDevicePreset:
         result = navigate_device_preset(MagicMock(), track_index=1, direction="next")
         mock_ableton.send_command.assert_called_with("navigate_preset", {
             "track_index": 0, "track_type": "track", "device_index": 0, "chain_index": None,
-            "direction": "next",
+            "chain_device_index": 0, "direction": "next",
         })
         assert "Warm Pad" in result
         assert "6/128" in result

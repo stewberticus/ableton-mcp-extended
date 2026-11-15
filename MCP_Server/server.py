@@ -2654,11 +2654,12 @@ def manage_clip_automation(
 def get_device_parameters(
     ctx: Context,
     track_index: int,
-    track_type: str = "track",
     device_index: int = 1,
     chain_index: int = 0,
+    chain_device_index: int = 1,
     category: str = "",
     show_all: bool = False,
+    track_type: str = "track",
 ) -> str:
     """List parameters for a device on a track.
 
@@ -2667,6 +2668,7 @@ def get_device_parameters(
     - track_type: "track" (default), "return" (1 = return A) or "master".
     - device_index: Device number on the track (1-based, default 1).
     - chain_index: Chain number inside a rack (1-based, 0 = no chain).
+    - chain_device_index: Device number inside that chain (1-based, default 1).
     - category: Filter by category name (returns detail for that category).
     - show_all: If True, return all parameters in detail mode.
 
@@ -2678,10 +2680,12 @@ def get_device_parameters(
         ti = _track_target_index(track_index, track_type)
         di = _to_zero_based(device_index, "device_index")
         ci = _optional_to_zero_based(chain_index, "chain_index")
+        cdi = _to_zero_based(chain_device_index, "chain_device_index")
         result = ableton.send_command("get_device_parameters", {
             "track_index": ti, "track_type": track_type,
             "device_index": di,
             "chain_index": ci,
+            "chain_device_index": cdi,
             "show_all": True,  # Always get full list from RS, group MCP-side
         })
 
@@ -2745,12 +2749,13 @@ def get_device_parameters(
 def set_device_parameter(
     ctx: Context,
     track_index: int,
-    track_type: str = "track",
     device_index: int = 1,
     chain_index: int = 0,
+    chain_device_index: int = 1,
     parameter_name: str = "",
     parameter_index: int = 0,
     value: float = 0.0,
+    track_type: str = "track",
 ) -> str:
     """Set a device parameter value.
 
@@ -2759,6 +2764,7 @@ def set_device_parameter(
     - track_type: "track" (default), "return" (1 = return A) or "master".
     - device_index: Device number (1-based, default 1).
     - chain_index: Chain number inside a rack (1-based, 0 = no chain).
+    - chain_device_index: Device number inside that chain (1-based, default 1).
     - parameter_name: Parameter name, friendly alias, or partial match.
     - parameter_index: Parameter number (1-based, alternative to name).
     - value: Normalized value 0.0-1.0.
@@ -2768,6 +2774,7 @@ def set_device_parameter(
         ti = _track_target_index(track_index, track_type)
         di = _to_zero_based(device_index, "device_index")
         ci = _optional_to_zero_based(chain_index, "chain_index")
+        cdi = _to_zero_based(chain_device_index, "chain_device_index")
         pi = _optional_to_zero_based(parameter_index, "parameter_index")
 
         # Resolve alias if parameter_name is provided
@@ -2779,6 +2786,7 @@ def set_device_parameter(
                 "track_index": ti, "track_type": track_type,
                 "device_index": di,
                 "chain_index": ci,
+            "chain_device_index": cdi,
                 "show_all": False,
             })
             device_name = info.get("device_name", "")
@@ -2791,6 +2799,7 @@ def set_device_parameter(
             "track_index": ti, "track_type": track_type,
             "device_index": di,
             "chain_index": ci,
+            "chain_device_index": cdi,
             "parameter_name": resolved_name if resolved_name else None,
             "parameter_index": pi,
             "value": value,
@@ -2819,6 +2828,7 @@ def enable_device(
     device_index: int = 0,
     device_name: str = "",
     chain_index: int = 0,
+    chain_device_index: int = 1,
     track_type: str = "track",
 ) -> str:
     """Enable (activate) a device on a track.
@@ -2829,8 +2839,9 @@ def enable_device(
     - device_index: Device number (1-based). Use 0 if using device_name.
     - device_name: Device name (alternative to device_index).
     - chain_index: Chain number inside a rack (1-based, 0 = no chain).
+    - chain_device_index: Device number inside that chain (1-based, default 1).
     """
-    return _toggle_device(track_index, device_index, device_name, chain_index, True, track_type)
+    return _toggle_device(track_index, device_index, device_name, chain_index, True, track_type, chain_device_index)
 
 
 @mcp.tool()
@@ -2840,6 +2851,7 @@ def disable_device(
     device_index: int = 0,
     device_name: str = "",
     chain_index: int = 0,
+    chain_device_index: int = 1,
     track_type: str = "track",
 ) -> str:
     """Disable (bypass) a device on a track.
@@ -2850,18 +2862,20 @@ def disable_device(
     - device_index: Device number (1-based). Use 0 if using device_name.
     - device_name: Device name (alternative to device_index).
     - chain_index: Chain number inside a rack (1-based, 0 = no chain).
+    - chain_device_index: Device number inside that chain (1-based, default 1).
     """
-    return _toggle_device(track_index, device_index, device_name, chain_index, False, track_type)
+    return _toggle_device(track_index, device_index, device_name, chain_index, False, track_type, chain_device_index)
 
 
 def _toggle_device(track_index, device_index, device_name, chain_index, enabled,
-                   track_type="track"):
+                   track_type="track", chain_device_index=1):
     """Shared logic for enable/disable device."""
     try:
         ableton = get_ableton_connection()
         ti = _track_target_index(track_index, track_type)
         di = _optional_to_zero_based(device_index, "device_index")
         ci = _optional_to_zero_based(chain_index, "chain_index")
+        cdi = _to_zero_based(chain_device_index, "chain_device_index")
 
         # If device_name provided, resolve to index
         if device_name and di is None:
@@ -2882,6 +2896,7 @@ def _toggle_device(track_index, device_index, device_name, chain_index, enabled,
             "track_index": ti, "track_type": track_type,
             "device_index": di,
             "chain_index": ci,
+            "chain_device_index": cdi,
             "enabled": enabled,
         })
 
@@ -2897,9 +2912,9 @@ def _toggle_device(track_index, device_index, device_name, chain_index, enabled,
 def get_chain_info(
     ctx: Context,
     track_index: int,
-    track_type: str = "track",
     device_index: int = 1,
     chain_index: int = 0,
+    track_type: str = "track",
 ) -> str:
     """List chains in a rack device, or devices within a specific chain.
 
@@ -2991,9 +3006,9 @@ def get_drum_pad_info(ctx: Context, track_index: int, device_index: int = 1,
 def delete_device(
     ctx: Context,
     track_index: int,
-    track_type: str = "track",
     device_index: int = 0,
     device_name: str = "",
+    track_type: str = "track",
 ) -> str:
     """Delete a device from a track.
 
@@ -3204,10 +3219,11 @@ def set_group_folded(ctx: Context, track_index: int, folded: bool = True) -> str
 def navigate_device_preset(
     ctx: Context,
     track_index: int,
-    track_type: str = "track",
     device_index: int = 1,
     chain_index: int = 0,
+    chain_device_index: int = 1,
     direction: str = "next",
+    track_type: str = "track",
 ) -> str:
     """Navigate device presets (next/previous/current).
 
@@ -3216,6 +3232,7 @@ def navigate_device_preset(
     - track_type: "track" (default), "return" (1 = return A) or "master".
     - device_index: Device number (1-based, default 1).
     - chain_index: Chain number inside a rack (1-based, 0 = no chain).
+    - chain_device_index: Device number inside that chain (1-based, default 1).
     - direction: "next", "previous", or "current".
     """
     try:
@@ -3223,10 +3240,12 @@ def navigate_device_preset(
         ti = _track_target_index(track_index, track_type)
         di = _to_zero_based(device_index, "device_index")
         ci = _optional_to_zero_based(chain_index, "chain_index")
+        cdi = _to_zero_based(chain_device_index, "chain_device_index")
         result = ableton.send_command("navigate_preset", {
             "track_index": ti, "track_type": track_type,
             "device_index": di,
             "chain_index": ci,
+            "chain_device_index": cdi,
             "direction": direction,
         })
 

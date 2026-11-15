@@ -365,19 +365,23 @@ class AbletonMCP(ControlSurface):
             # Devices
             "get_device_parameters": lambda p: self._get_device_parameters(
                 g(p, "track_index", 0), g(p, "device_index", 0), g(p, "chain_index"),
-                g(p, "show_all", False), track_type=g(p, "track_type", "track")),
+                g(p, "show_all", False), track_type=g(p, "track_type", "track"),
+                chain_device_index=g(p, "chain_device_index", 0)),
             "set_device_parameter": lambda p: self._set_device_parameter(
                 g(p, "track_index", 0), g(p, "device_index", 0), g(p, "chain_index"),
                 g(p, "parameter_name"), g(p, "parameter_index"), g(p, "value", 0.0),
-                track_type=g(p, "track_type", "track")),
+                track_type=g(p, "track_type", "track"),
+                chain_device_index=g(p, "chain_device_index", 0)),
             "set_device_enabled": lambda p: self._set_device_enabled(
                 g(p, "track_index", 0), g(p, "device_index", 0), g(p, "chain_index"),
-                g(p, "enabled", True), track_type=g(p, "track_type", "track")),
+                g(p, "enabled", True), track_type=g(p, "track_type", "track"),
+                chain_device_index=g(p, "chain_device_index", 0)),
             "delete_device": lambda p: self._delete_device(
                 g(p, "track_index", 0), g(p, "device_index", 0), track_type=g(p, "track_type", "track")),
             "navigate_preset": lambda p: self._navigate_preset(
                 g(p, "track_index", 0), g(p, "device_index", 0), g(p, "chain_index"),
-                g(p, "direction", "current"), track_type=g(p, "track_type", "track")),
+                g(p, "direction", "current"), track_type=g(p, "track_type", "track"),
+                chain_device_index=g(p, "chain_device_index", 0)),
             "get_chain_info": lambda p: self._get_chain_info(
                 g(p, "track_index", 0), g(p, "device_index", 0), g(p, "chain_index"),
                 track_type=g(p, "track_type", "track")),
@@ -1926,23 +1930,13 @@ class AbletonMCP(ControlSurface):
     # ── Device command handlers ──────────────────────────────────────
 
     def _get_device_parameters(self, track_index, device_index, chain_index=None, show_all=False,
-                               track_type="track"):
+                               track_type="track", chain_device_index=0):
         """Return parameter list for a device."""
         try:
             track, device = self._resolve_device(track_index, device_index, track_type=track_type)
 
             # If chain_index, navigate into chain
-            target_device = device
-            if chain_index is not None:
-                if not device.can_have_chains:
-                    raise ValueError("Device '{0}' is not a rack".format(device.name))
-                chains = device.chains
-                if chain_index < 0 or chain_index >= len(chains):
-                    raise IndexError("Chain index {0} out of range".format(chain_index))
-                chain = chains[chain_index]
-                if not chain.devices:
-                    raise ValueError("Chain '{0}' has no devices".format(chain.name))
-                target_device = chain.devices[0]
+            target_device = self._chain_target(device, chain_index, chain_device_index)
 
             params = target_device.parameters
             param_list = []
@@ -1977,19 +1971,12 @@ class AbletonMCP(ControlSurface):
 
     def _set_device_parameter(self, track_index, device_index, chain_index=None,
                               parameter_name=None, parameter_index=None, value=0.0,
-                              track_type="track"):
+                              track_type="track", chain_device_index=0):
         """Set a device parameter by name or index. Value is normalized 0.0-1.0."""
         try:
             track, device = self._resolve_device(track_index, device_index, track_type=track_type)
 
-            target_device = device
-            if chain_index is not None:
-                if not device.can_have_chains:
-                    raise ValueError("Device '{0}' is not a rack".format(device.name))
-                chain = device.chains[chain_index]
-                if not chain.devices:
-                    raise ValueError("Chain '{0}' has no devices".format(chain.name))
-                target_device = chain.devices[0]
+            target_device = self._chain_target(device, chain_index, chain_device_index)
 
             param, match_type = self._find_parameter(
                 target_device, name=parameter_name, index=parameter_index)
@@ -2021,19 +2008,12 @@ class AbletonMCP(ControlSurface):
             raise
 
     def _set_device_enabled(self, track_index, device_index, chain_index=None, enabled=True,
-                            track_type="track"):
+                            track_type="track", chain_device_index=0):
         """Enable or disable a device via its 'Device On' parameter."""
         try:
             track, device = self._resolve_device(track_index, device_index, track_type=track_type)
 
-            target_device = device
-            if chain_index is not None:
-                if not device.can_have_chains:
-                    raise ValueError("Device '{0}' is not a rack".format(device.name))
-                chain = device.chains[chain_index]
-                if not chain.devices:
-                    raise ValueError("Chain has no devices")
-                target_device = chain.devices[0]
+            target_device = self._chain_target(device, chain_index, chain_device_index)
 
             # Use "Device On" parameter (always index 0) instead of
             # is_active which is read-only in the Live API.
@@ -2244,19 +2224,12 @@ class AbletonMCP(ControlSurface):
         return {"track_name": track.name, "folded": bool(track.fold_state)}
 
     def _navigate_preset(self, track_index, device_index, chain_index=None, direction="current",
-                         track_type="track"):
+                         track_type="track", chain_device_index=0):
         """Navigate device presets."""
         try:
             track, device = self._resolve_device(track_index, device_index, track_type=track_type)
 
-            target_device = device
-            if chain_index is not None:
-                if not device.can_have_chains:
-                    raise ValueError("Device '{0}' is not a rack".format(device.name))
-                chain = device.chains[chain_index]
-                if not chain.devices:
-                    raise ValueError("Chain has no devices")
-                target_device = chain.devices[0]
+            target_device = self._chain_target(device, chain_index, chain_device_index)
 
             if not hasattr(target_device, 'presets') or not target_device.presets:
                 raise ValueError("Device '{0}' has no presets available".format(
@@ -2314,6 +2287,26 @@ class AbletonMCP(ControlSurface):
                 len(track.devices) - 1 if track.devices else 0))
 
         return track, track.devices[device_index]
+
+    def _chain_target(self, device, chain_index=None, chain_device_index=0):
+        """Return the device to act on: the rack itself, or a device inside one of its chains."""
+        if chain_index is None:
+            return device
+        if not device.can_have_chains:
+            raise ValueError("Device '{0}' is not a rack and has no chains".format(device.name))
+        chains = list(device.chains)
+        if chain_index < 0 or chain_index >= len(chains):
+            raise IndexError("Chain index {0} out of range on '{1}' (0-{2})".format(
+                chain_index, device.name, len(chains) - 1))
+        chain = chains[chain_index]
+        devices = list(chain.devices)
+        if not devices:
+            raise ValueError("Chain '{0}' has no devices".format(chain.name))
+        chain_device_index = chain_device_index or 0
+        if chain_device_index < 0 or chain_device_index >= len(devices):
+            raise IndexError("Device {0} out of range in chain '{1}' (0-{2})".format(
+                chain_device_index, chain.name, len(devices) - 1))
+        return devices[chain_device_index]
 
     def _find_parameter(self, device, name=None, index=None):
         """Find a parameter on a device by name or index.
