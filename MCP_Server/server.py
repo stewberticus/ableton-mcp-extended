@@ -27,6 +27,7 @@ from MCP_Server.plugin_aliases import (  # noqa: E402
     get_alias_for_param,
     resolve_alias,
 )
+from MCP_Server import serum_presets  # noqa: E402
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
@@ -1539,6 +1540,9 @@ def _plugin_match_score(plugin_name: str, query: str) -> int:
     return 0
 
 
+_PLUGIN_PRESET_SUFFIX_RE = re.compile(r"\.(vstpreset|aupreset|fxp|fxb|adv)$", re.IGNORECASE)
+
+
 def _collect_external_plugins_from_root(
     ableton: AbletonConnection,
     root_path: str,
@@ -1578,6 +1582,11 @@ def _collect_external_plugins_from_root(
             is_folder = bool(item.get("is_folder", False))
             is_loadable = bool(item.get("is_loadable", False))
             uri = item.get("uri")
+
+            # Plugin preset files (.vstpreset, .aupreset, ...) live under the
+            # plugin's own entry; they're presets, not plugins.
+            if not is_folder and _PLUGIN_PRESET_SUFFIX_RE.search(name):
+                continue
 
             if is_loadable and uri:
                 plugins.append({
@@ -1776,6 +1785,81 @@ def load_external_plugin(
     except Exception as e:
         logger.error(f"Error loading external plugin: {str(e)}")
         return f"Error loading external plugin: {str(e)}"
+
+
+_SERUM2_BROWSER_PATH = "plugins/VST3/Xfer Records/Serum 2"
+_SERUM_BROWSER_WAIT_SECONDS = 30.0
+
+
+def _find_serum2_browser_path(ableton: AbletonConnection) -> str:
+    """Browser path of the Serum 2 VST3 entry, where Live lists its .vstpreset files."""
+    result = ableton.send_command("get_browser_items_at_path", {"path": _SERUM2_BROWSER_PATH})
+    if "error" not in result:
+        return _SERUM2_BROWSER_PATH
+    for plugin in _get_cached_external_plugins(ableton):
+        path = plugin.get("path", "")
+        if plugin.get("name") == "Serum 2" and "/vst3/" in path.lower():
+            return path
+    raise ValueError(
+        "Serum 2 (VST3) was not found in Live's browser. Check that the VST3 "
+        "version is installed and enabled in Live's Plug-Ins preferences.")
+
+
+def _wait_for_browser_item(ableton: AbletonConnection, path: str, name: str,
+                           timeout: float | None = None) -> Dict[str, Any]:
+    """Poll a browser folder until Live has indexed the named file."""
+    if timeout is None:
+        timeout = _SERUM_BROWSER_WAIT_SECONDS
+    deadline = time.monotonic() + timeout
+    while True:
+        result = ableton.send_command("get_browser_items_at_path", {"path": path})
+        for item in result.get("items", []):
+            if item.get("name") == name and item.get("uri"):
+                return item
+        if time.monotonic() >= deadline:
+            raise TimeoutError(
+                "Live hasn't indexed '{0}' under {1} after {2:.0f}s. Try again in a "
+                "moment, or rescan plug-ins in Live's preferences.".format(name, path, timeout))
+        time.sleep(1.0)
+
+
+@tool()
+def load_serum_preset(ctx: Context, track_index: int, preset: str,
+                      track_type: str = "track") -> str:
+    """Load a Serum 2 preset (.SerumPreset) onto a track as a ready-to-play Serum 2 device.
+
+    Live can't open .SerumPreset files itself, so the preset is converted to a
+    VST3 preset under ~/Library/Audio/Presets/Xfer Records/Serum 2/MCP/ and
+    loaded from Live's browser. The whole patch comes across, including its
+    preset name in Serum's display.
+
+    Parameters:
+    - track_index: Track number (1-based). Use a MIDI track.
+    - preset: A preset name ("DnB Wub Bass"), a folder-qualified name
+      ("User/DnB Wub Bass"), or a full path to a .SerumPreset file. Names are
+      searched under Serum's preset folders (override with SERUM_PRESETS_DIRS).
+    - track_type: "track" (default), "return" (1 = return A) or "master".
+    """
+    try:
+        source = serum_presets.find_serum_preset(preset)
+        target = serum_presets.write_vstpreset(source)
+
+        ableton = get_ableton_connection()
+        ti = _track_target_index(track_index, track_type)
+        folder = _find_serum2_browser_path(ableton)
+        item = _wait_for_browser_item(ableton, folder, target.name)
+        result = ableton.send_command("load_browser_item", {
+            "track_index": ti, "track_type": track_type,
+            "item_uri": item["uri"],
+            "path": "{0}/{1}".format(folder, target.name),
+        })
+        if not result.get("loaded", False):
+            return "Error: Live did not load Serum preset '{0}'.".format(source.stem)
+        return "Loaded Serum preset '{0}' on track {1} (from {2}).".format(
+            source.stem, track_index, source)
+    except Exception as e:
+        logger.error(f"Error loading Serum preset: {str(e)}")
+        return f"Error loading Serum preset: {str(e)}"
 
 
 _NATIVE_DEVICE_ROOTS = {
