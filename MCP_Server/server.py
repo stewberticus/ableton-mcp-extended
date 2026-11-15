@@ -48,7 +48,9 @@ MODIFYING_COMMANDS = frozenset([
     "create_cue_point", "delete_cue_point",
     "create_arrangement_clip", "create_arrangement_audio_clip",
     "duplicate_to_arrangement", "delete_arrangement_clip",
-    "set_arrangement_clip_property",
+    "set_clip_properties", "delete_clip", "duplicate_clip_to_slot",
+    "create_scene", "duplicate_scene", "delete_scene", "set_scene_name",
+    "fire_scene", "stop_all_clips",
     "set_view", "control_arrangement_view",
     "manage_clip_automation",
     "add_notes_to_arrangement_clip",
@@ -1972,6 +1974,93 @@ def delete_arrangement_clip(
         return f"Error deleting arrangement clip: {str(e)}"
 
 
+_WARP_MODES = {
+    "beats": 0, "tones": 1, "texture": 2, "re-pitch": 3, "repitch": 3,
+    "complex": 4, "rex": 5, "complex pro": 6, "complex_pro": 6,
+}
+
+
+def _warp_mode_value(warp_mode: Union[int, str, None]) -> Union[int, None]:
+    if warp_mode is None or warp_mode == "":
+        return None
+    if isinstance(warp_mode, int) or str(warp_mode).strip().isdigit():
+        return int(warp_mode)
+    key = str(warp_mode).strip().lower()
+    if key not in _WARP_MODES:
+        raise ValueError(f"Unknown warp mode '{warp_mode}'. Use one of: beats, tones, "
+                         "texture, re-pitch, complex, rex, complex pro")
+    return _WARP_MODES[key]
+
+
+def _set_clip_properties(track_index, clip_index, clip_name, arrangement, props) -> str:
+    """Shared body for set_clip_property / set_arrangement_clip_property."""
+    props = {k: v for k, v in props.items() if v is not None and v != ""}
+    if "warp_mode" in props:
+        props["warp_mode"] = _warp_mode_value(props["warp_mode"])
+    if not props:
+        return "No properties specified to change."
+    ableton = get_ableton_connection()
+    params = _clip_target(track_index, clip_index, clip_name, arrangement)
+    params["properties"] = props
+    result = ableton.send_command("set_clip_properties", params)
+    applied = result.get("properties", props)
+    changes = ", ".join(f"{k}={v}" for k, v in applied.items())
+    return f"Updated {_clip_ref(track_index, clip_index, clip_name, arrangement)}: {changes}"
+
+
+@mcp.tool()
+def set_clip_property(
+    ctx: Context,
+    track_index: int,
+    clip_index: int = 1,
+    clip_name: str = "",
+    name: str = "",
+    muted: bool = None,
+    color: int = None,
+    looping: bool = None,
+    loop_start: float = None,
+    loop_end: float = None,
+    start_marker: float = None,
+    end_marker: float = None,
+    gain: float = None,
+    pitch_coarse: int = None,
+    pitch_fine: float = None,
+    warping: bool = None,
+    warp_mode: Union[int, str] = None,
+) -> str:
+    """Set properties on a session clip (loop, length, gain, warp, pitch, color...).
+
+    Only the properties you pass are changed. Loop and marker changes are
+    applied in an order Live accepts, so a loop can be moved past its old end.
+
+    Parameters:
+    - track_index: Track number (1-based).
+    - clip_index: Clip slot number (1-based).
+    - clip_name: Clip name (alternative to clip_index).
+    - name: New clip name.
+    - muted: Clip activator off (True) / on (False).
+    - color: Color as 0x00RRGGBB.
+    - looping: Loop on/off.
+    - loop_start / loop_end: Loop region in beats (clip time).
+    - start_marker / end_marker: Playback start/end markers in beats.
+    - gain: Audio clip gain, normalized 0.0-1.0 (audio only).
+    - pitch_coarse: Semitones -48..48 (audio only).
+    - pitch_fine: Cents -50..49 (audio only).
+    - warping: Warp on/off (audio only).
+    - warp_mode: beats, tones, texture, re-pitch, complex, rex, complex pro,
+      or 0-6 (audio only).
+    """
+    try:
+        return _set_clip_properties(track_index, clip_index, clip_name, False, dict(
+            name=name, muted=muted, color=color, looping=looping, loop_start=loop_start,
+            loop_end=loop_end, start_marker=start_marker, end_marker=end_marker, gain=gain,
+            pitch_coarse=pitch_coarse, pitch_fine=pitch_fine, warping=warping,
+            warp_mode=warp_mode))
+    except Exception as e:
+        logger.error(f"Error setting clip property: {str(e)}")
+        return f"Error setting clip property: {str(e)}"
+
+
 @mcp.tool()
 def set_arrangement_clip_property(
     ctx: Context,
@@ -1984,64 +2073,214 @@ def set_arrangement_clip_property(
     looping: bool = None,
     loop_start: float = None,
     loop_end: float = None,
+    start_marker: float = None,
+    end_marker: float = None,
     gain: float = None,
     pitch_coarse: int = None,
     pitch_fine: float = None,
     warping: bool = None,
-    warp_mode: int = None,
+    warp_mode: Union[int, str] = None,
 ) -> str:
-    """Set properties on an arrangement clip.
+    """Set properties on an arrangement clip. Only the properties you pass change.
 
     Parameters:
     - track_index: Track number (1-based).
-    - clip_index: Clip position (1-based).
+    - clip_index: Clip position (1-based, as listed by get_arrangement_info).
     - clip_name: Clip name (alternative to clip_index).
     - name: New clip name.
-    - muted: Mute state.
-    - color: Color (0x00RRGGBB).
+    - muted: Clip activator off (True) / on (False).
+    - color: Color as 0x00RRGGBB.
     - looping: Loop on/off.
-    - loop_start: Loop start in beats.
-    - loop_end: Loop end in beats.
-    - gain: Audio gain (0.0-1.0).
-    - pitch_coarse: Semitone pitch shift (-48 to 48).
-    - pitch_fine: Fine pitch shift (-50 to 49 cents).
-    - warping: Warp on/off.
-    - warp_mode: Warp mode (0-6).
+    - loop_start / loop_end: Loop region in beats (clip time).
+    - start_marker / end_marker: Playback start/end markers in beats.
+    - gain: Audio clip gain, normalized 0.0-1.0 (audio only).
+    - pitch_coarse: Semitones -48..48 (audio only).
+    - pitch_fine: Cents -50..49 (audio only).
+    - warping: Warp on/off (audio only).
+    - warp_mode: beats, tones, texture, re-pitch, complex, rex, complex pro,
+      or 0-6 (audio only).
     """
     try:
-        ableton = get_ableton_connection()
-        ti = _to_zero_based(track_index, "track_index")
-        ci = _to_zero_based(clip_index, "clip_index") if clip_index > 0 else 0
-
-        props = {
-            "name": name, "muted": muted, "color": color, "looping": looping,
-            "loop_start": loop_start, "loop_end": loop_end, "gain": gain,
-            "pitch_coarse": pitch_coarse, "pitch_fine": pitch_fine,
-            "warping": warping, "warp_mode": warp_mode,
-        }
-
-        changes = []
-        for prop_name, value in props.items():
-            if value is not None and value != "":
-                cmd = {
-                    "track_index": ti,
-                    "clip_index": ci,
-                    "property": prop_name,
-                    "value": value,
-                }
-                if clip_name:
-                    cmd["clip_name"] = clip_name
-                ableton.send_command("set_arrangement_clip_property", cmd)
-                changes.append(f"{prop_name}={value}")
-
-        if not changes:
-            return "No properties specified to change."
-
-        ref = f"'{clip_name}'" if clip_name else f"clip {clip_index}"
-        return f"Updated {ref} on track {track_index}: {', '.join(changes)}"
+        return _set_clip_properties(track_index, clip_index, clip_name, True, dict(
+            name=name, muted=muted, color=color, looping=looping, loop_start=loop_start,
+            loop_end=loop_end, start_marker=start_marker, end_marker=end_marker, gain=gain,
+            pitch_coarse=pitch_coarse, pitch_fine=pitch_fine, warping=warping,
+            warp_mode=warp_mode))
     except Exception as e:
         logger.error(f"Error setting arrangement clip property: {str(e)}")
         return f"Error setting arrangement clip property: {str(e)}"
+
+
+# ── Session clip slot and scene tools ─────────────────────────────
+
+@mcp.tool()
+def delete_clip(ctx: Context, track_index: int, clip_index: int) -> str:
+    """Delete the clip in a session clip slot.
+
+    Parameters:
+    - track_index: Track number (1-based).
+    - clip_index: Clip slot number (1-based).
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("delete_clip", {
+            "track_index": _to_zero_based(track_index, "track_index"),
+            "clip_index": _to_zero_based(clip_index, "clip_index"),
+        })
+        return f"Deleted clip '{result.get('deleted_clip', '')}' at track {track_index}, slot {clip_index}"
+    except Exception as e:
+        logger.error(f"Error deleting clip: {str(e)}")
+        return f"Error deleting clip: {str(e)}"
+
+
+@mcp.tool()
+def duplicate_clip_to_slot(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    target_clip_index: int,
+    target_track_index: int = 0,
+) -> str:
+    """Copy a session clip into another (empty) clip slot.
+
+    Parameters:
+    - track_index: Source track number (1-based).
+    - clip_index: Source clip slot (1-based).
+    - target_clip_index: Destination clip slot (1-based).
+    - target_track_index: Destination track (1-based). 0 = same track.
+    """
+    try:
+        ableton = get_ableton_connection()
+        tti = target_track_index if target_track_index > 0 else track_index
+        result = ableton.send_command("duplicate_clip_to_slot", {
+            "track_index": _to_zero_based(track_index, "track_index"),
+            "clip_index": _to_zero_based(clip_index, "clip_index"),
+            "target_track_index": _to_zero_based(tti, "target_track_index"),
+            "target_clip_index": _to_zero_based(target_clip_index, "target_clip_index"),
+        })
+        return (f"Copied '{result.get('source', '')}' to track {tti}, slot {target_clip_index}")
+    except Exception as e:
+        logger.error(f"Error duplicating clip: {str(e)}")
+        return f"Error duplicating clip: {str(e)}"
+
+
+@mcp.tool()
+def get_scenes(ctx: Context) -> str:
+    """List the session's scenes (rows) with how many clips each holds."""
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("get_scenes")
+        lines = ["=== Scenes ==="]
+        for sc in result.get("scenes", []):
+            name = sc.get("name") or "(unnamed)"
+            lines.append(f"  {sc['index'] + 1}. {name} — {sc.get('clip_count', 0)} clip(s)")
+        return "\n".join(lines)
+    except Exception as e:
+        logger.error(f"Error getting scenes: {str(e)}")
+        return f"Error getting scenes: {str(e)}"
+
+
+@mcp.tool()
+def create_scene(ctx: Context, index: int = 0, name: str = "") -> str:
+    """Insert a new empty scene.
+
+    Parameters:
+    - index: Position for the new scene (1-based). 0 = after the last scene.
+    - name: Optional scene name.
+    """
+    try:
+        ableton = get_ableton_connection()
+        idx = _optional_to_zero_based(index, "index")
+        result = ableton.send_command("create_scene", {"index": -1 if idx is None else idx})
+        new_index = result.get("index", 0)
+        if name:
+            ableton.send_command("set_scene_name", {"scene_index": new_index, "name": name})
+        return f"Created scene {new_index + 1}" + (f" '{name}'" if name else "")
+    except Exception as e:
+        logger.error(f"Error creating scene: {str(e)}")
+        return f"Error creating scene: {str(e)}"
+
+
+@mcp.tool()
+def duplicate_scene(ctx: Context, scene_index: int) -> str:
+    """Duplicate a scene (and all its clips) into a new scene right below it.
+
+    Parameters:
+    - scene_index: Scene number (1-based).
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("duplicate_scene", {
+            "scene_index": _to_zero_based(scene_index, "scene_index")})
+        return f"Duplicated scene {scene_index} as scene {result.get('index', 0) + 1}"
+    except Exception as e:
+        logger.error(f"Error duplicating scene: {str(e)}")
+        return f"Error duplicating scene: {str(e)}"
+
+
+@mcp.tool()
+def delete_scene(ctx: Context, scene_index: int) -> str:
+    """Delete a scene and the clips in it.
+
+    Parameters:
+    - scene_index: Scene number (1-based).
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("delete_scene", {
+            "scene_index": _to_zero_based(scene_index, "scene_index")})
+        return (f"Deleted scene '{result.get('deleted_scene', '')}'. "
+                f"{result.get('remaining_scenes', '?')} scenes remain; later scenes moved up by one.")
+    except Exception as e:
+        logger.error(f"Error deleting scene: {str(e)}")
+        return f"Error deleting scene: {str(e)}"
+
+
+@mcp.tool()
+def set_scene_name(ctx: Context, scene_index: int, name: str) -> str:
+    """Rename a scene.
+
+    Parameters:
+    - scene_index: Scene number (1-based).
+    - name: New name.
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_scene_name", {
+            "scene_index": _to_zero_based(scene_index, "scene_index"), "name": name})
+        return f"Renamed scene {scene_index} to '{result.get('name', name)}'"
+    except Exception as e:
+        logger.error(f"Error renaming scene: {str(e)}")
+        return f"Error renaming scene: {str(e)}"
+
+
+@mcp.tool()
+def fire_scene(ctx: Context, scene_index: int) -> str:
+    """Launch every clip in a scene.
+
+    Parameters:
+    - scene_index: Scene number (1-based).
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("fire_scene", {
+            "scene_index": _to_zero_based(scene_index, "scene_index")})
+        return f"Fired scene {scene_index} '{result.get('name', '')}'"
+    except Exception as e:
+        logger.error(f"Error firing scene: {str(e)}")
+        return f"Error firing scene: {str(e)}"
+
+
+@mcp.tool()
+def stop_all_clips(ctx: Context) -> str:
+    """Stop every playing session clip (like the Stop All Clips button)."""
+    try:
+        ableton = get_ableton_connection()
+        ableton.send_command("stop_all_clips")
+        return "Stopped all clips"
+    except Exception as e:
+        logger.error(f"Error stopping all clips: {str(e)}")
+        return f"Error stopping all clips: {str(e)}"
 
 
 @mcp.tool()

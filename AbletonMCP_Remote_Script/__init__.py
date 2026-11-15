@@ -285,6 +285,22 @@ class AbletonMCP(ControlSurface):
                 g(p, "track_index", 0), g(p, "clip_index", 0), g(p, "name", "")),
             "fire_clip": lambda p: self._fire_clip(g(p, "track_index", 0), g(p, "clip_index", 0)),
             "stop_clip": lambda p: self._stop_clip(g(p, "track_index", 0), g(p, "clip_index", 0)),
+            "delete_clip": lambda p: self._delete_clip(g(p, "track_index", 0), g(p, "clip_index", 0)),
+            "duplicate_clip_to_slot": lambda p: self._duplicate_clip_to_slot(
+                g(p, "track_index", 0), g(p, "clip_index", 0),
+                g(p, "target_track_index", 0), g(p, "target_clip_index", 0)),
+            "set_clip_properties": lambda p: self._set_clip_properties(
+                g(p, "track_index", 0), g(p, "clip_index", 0), g(p, "properties", {}),
+                g(p, "arrangement", False), g(p, "clip_name")),
+            # Scenes
+            "get_scenes": lambda p: self._get_scenes(),
+            "create_scene": lambda p: self._create_scene(g(p, "index", -1)),
+            "duplicate_scene": lambda p: self._duplicate_scene(g(p, "scene_index", 0)),
+            "delete_scene": lambda p: self._delete_scene(g(p, "scene_index", 0)),
+            "set_scene_name": lambda p: self._set_scene_name(
+                g(p, "scene_index", 0), g(p, "name", "")),
+            "fire_scene": lambda p: self._fire_scene(g(p, "scene_index", 0)),
+            "stop_all_clips": lambda p: self._stop_all_clips(),
             # Browser
             "get_browser_tree": lambda p: self.get_browser_tree(g(p, "category_type", "all")),
             "get_browser_items_at_path": lambda p: self.get_browser_items_at_path(g(p, "path", "")),
@@ -300,9 +316,7 @@ class AbletonMCP(ControlSurface):
                 g(p, "track_index", 0), g(p, "clip_index", 0), g(p, "destination_time", 0.0)),
             "delete_arrangement_clip": lambda p: self._delete_arrangement_clip(
                 g(p, "track_index", 0), g(p, "clip_index"), g(p, "clip_name")),
-            "set_arrangement_clip_property": lambda p: self._set_arrangement_clip_property(
-                g(p, "track_index", 0), g(p, "clip_index", 0), g(p, "property", ""),
-                g(p, "value"), g(p, "clip_name")),
+
             "manage_clip_automation": lambda p: self._manage_clip_automation(
                 g(p, "track_index", 0), g(p, "clip_index", 0), g(p, "action", "create"),
                 g(p, "parameter_name", ""), g(p, "clip_name")),
@@ -1151,6 +1165,139 @@ class AbletonMCP(ControlSurface):
             self.log_message("Error stopping playback: " + str(e))
             raise
 
+    # ── Scenes ───────────────────────────────────────────────────────
+
+    def _scene(self, scene_index):
+        scenes = list(self._song.scenes)
+        if scene_index < 0 or scene_index >= len(scenes):
+            raise IndexError("Scene index {0} out of range (0-{1})".format(
+                scene_index, len(scenes) - 1))
+        return scenes[scene_index]
+
+    def _get_scenes(self):
+        scenes = []
+        for i, scene in enumerate(self._song.scenes):
+            filled = sum(1 for slot in scene.clip_slots if slot.has_clip)
+            scenes.append({
+                "index": i,
+                "name": scene.name,
+                "clip_count": filled,
+                "is_triggered": bool(getattr(scene, "is_triggered", False)),
+            })
+        return {"scenes": scenes}
+
+    def _create_scene(self, index=-1):
+        self._song.create_scene(index)
+        new_index = len(self._song.scenes) - 1 if index == -1 else index
+        return {"index": new_index, "name": self._song.scenes[new_index].name}
+
+    def _duplicate_scene(self, scene_index):
+        self._scene(scene_index)
+        self._song.duplicate_scene(scene_index)
+        new_index = scene_index + 1
+        return {"index": new_index, "name": self._song.scenes[new_index].name}
+
+    def _delete_scene(self, scene_index):
+        scene = self._scene(scene_index)
+        if len(self._song.scenes) <= 1:
+            raise ValueError("Cannot delete the last scene")
+        name = scene.name
+        self._song.delete_scene(scene_index)
+        return {"deleted_scene": name, "remaining_scenes": len(self._song.scenes)}
+
+    def _set_scene_name(self, scene_index, name):
+        scene = self._scene(scene_index)
+        scene.name = name
+        return {"index": scene_index, "name": scene.name}
+
+    def _fire_scene(self, scene_index):
+        scene = self._scene(scene_index)
+        scene.fire()
+        return {"index": scene_index, "name": scene.name, "fired": True}
+
+    def _stop_all_clips(self):
+        self._song.stop_all_clips()
+        return {"stopped": True}
+
+    # ── Session clip slots ───────────────────────────────────────────
+
+    def _clip_slot(self, track_index, clip_index):
+        if track_index < 0 or track_index >= len(self._song.tracks):
+            raise IndexError("Track index {0} out of range (0-{1})".format(
+                track_index, len(self._song.tracks) - 1))
+        track = self._song.tracks[track_index]
+        slots = list(track.clip_slots)
+        if clip_index < 0 or clip_index >= len(slots):
+            raise IndexError("Clip slot index {0} out of range (0-{1})".format(
+                clip_index, len(slots) - 1))
+        return track, slots[clip_index]
+
+    def _delete_clip(self, track_index, clip_index):
+        track, slot = self._clip_slot(track_index, clip_index)
+        if not slot.has_clip:
+            raise ValueError("No clip in slot {0} on track '{1}'".format(clip_index, track.name))
+        name = slot.clip.name
+        slot.delete_clip()
+        return {"deleted_clip": name}
+
+    def _duplicate_clip_to_slot(self, track_index, clip_index, target_track_index, target_clip_index):
+        track, slot = self._clip_slot(track_index, clip_index)
+        if not slot.has_clip:
+            raise ValueError("No clip in slot {0} on track '{1}'".format(clip_index, track.name))
+        target_track, target = self._clip_slot(target_track_index, target_clip_index)
+        if target.has_clip:
+            raise ValueError("Target slot {0} on track '{1}' already has a clip".format(
+                target_clip_index, target_track.name))
+        slot.duplicate_clip_to(target)
+        return {"source": slot.clip.name, "target_track": target_track.name,
+                "target_slot": target_clip_index}
+
+    # ── Clip properties (session or arrangement) ─────────────────────
+
+    CLIP_PROPERTIES = ("name", "muted", "color", "looping", "loop_start", "loop_end",
+                       "start_marker", "end_marker", "gain", "pitch_coarse", "pitch_fine",
+                       "warping", "warp_mode")
+    AUDIO_ONLY_PROPERTIES = ("gain", "pitch_coarse", "pitch_fine", "warping", "warp_mode")
+
+    def _set_clip_properties(self, track_index, clip_index, properties, arrangement=False,
+                             clip_name=None):
+        """Set several clip properties at once, in an order Live accepts.
+
+        loop/marker ranges must keep start < end at every step, so when a
+        new start lies beyond the current end, the end is moved first.
+        """
+        unknown = [k for k in properties if k not in self.CLIP_PROPERTIES]
+        if unknown:
+            raise ValueError("Property {0} not allowed. Allowed: {1}".format(
+                ", ".join(unknown), ", ".join(self.CLIP_PROPERTIES)))
+        track, clip = self._resolve_any_clip(track_index, clip_index, arrangement, clip_name)
+        if not getattr(clip, "is_audio_clip", False):
+            audio_only = [k for k in properties if k in self.AUDIO_ONLY_PROPERTIES]
+            if audio_only:
+                raise ValueError("{0} only apply to audio clips; '{1}' is a MIDI clip".format(
+                    ", ".join(audio_only), clip.name))
+
+        props = dict(properties)
+        ordered = []
+        for start_key, end_key in (("loop_start", "loop_end"), ("start_marker", "end_marker")):
+            if start_key in props and end_key in props:
+                start, end = props.pop(start_key), props.pop(end_key)
+                if start >= getattr(clip, end_key):
+                    ordered += [(end_key, end), (start_key, start)]
+                else:
+                    ordered += [(start_key, start), (end_key, end)]
+        # looping first so loop points apply to the right mode
+        if "looping" in props:
+            ordered.insert(0, ("looping", props.pop("looping")))
+        ordered += list(props.items())
+
+        for key, value in ordered:
+            setattr(clip, key, value)
+        return {
+            "clip_name": clip.name,
+            "properties": {key: getattr(clip, key) for key, _ in ordered},
+        }
+
     # Browser helper methods
 
     def _normalize_browser_category_name(self, category_name):
@@ -1518,22 +1665,6 @@ class AbletonMCP(ControlSurface):
             return {"deleted": True}
         except Exception as e:
             self.log_message("Error deleting arrangement clip: " + str(e))
-            raise
-
-    def _set_arrangement_clip_property(self, track_index, clip_index, property_name, value,
-                                       clip_name=None):
-        """Set a property on an arrangement clip."""
-        try:
-            ALLOWED = ("name", "muted", "color", "looping", "loop_start", "loop_end",
-                       "gain", "pitch_coarse", "pitch_fine", "warping", "warp_mode")
-            if property_name not in ALLOWED:
-                raise ValueError("Property '{0}' not allowed. Allowed: {1}".format(
-                    property_name, ", ".join(ALLOWED)))
-            track, clip = self._resolve_arrangement_clip(track_index, clip_index, clip_name)
-            setattr(clip, property_name, value)
-            return {"property": property_name, "value": getattr(clip, property_name)}
-        except Exception as e:
-            self.log_message("Error setting arrangement clip property: " + str(e))
             raise
 
     def _set_view(self, view_name):

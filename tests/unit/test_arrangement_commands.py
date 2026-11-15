@@ -353,10 +353,10 @@ class TestSetArrangementClipPropertyCommand:
         assert mock_ableton.send_command.call_count == 1
 
     @patch('MCP_Server.server.get_ableton_connection')
-    def test_multiple_props_sends_multiple(self, mock_conn):
-        # Setting two properties should result in two separate RS commands
+    def test_multiple_props_sent_together(self, mock_conn):
+        # Several properties go in one command so the Remote Script can order them
         mock_ableton = MagicMock()
-        mock_ableton.send_command.return_value = {"property": "x", "value": True}
+        mock_ableton.send_command.return_value = {"properties": {"muted": True, "looping": False}}
         mock_conn.return_value = mock_ableton
 
         from MCP_Server.server import set_arrangement_clip_property
@@ -364,7 +364,11 @@ class TestSetArrangementClipPropertyCommand:
             MagicMock(), track_index=1, clip_index=1,
             muted=True, looping=False)
 
-        assert mock_ableton.send_command.call_count == 2
+        assert mock_ableton.send_command.call_count == 1
+        name, params = mock_ableton.send_command.call_args[0]
+        assert name == "set_clip_properties"
+        assert params["properties"] == {"muted": True, "looping": False}
+        assert params["arrangement"] is True
 
     @patch('MCP_Server.server.get_ableton_connection')
     def test_no_props_no_command(self, mock_conn):

@@ -66,7 +66,7 @@ class TestServerSendsClipName:
 
         params = ableton.send_command.call_args[0][1]
         assert params["clip_name"] == "Chorus"
-        assert params["property"] == "muted"
+        assert params["properties"] == {"muted": True}
 
     @patch('MCP_Server.server.get_ableton_connection')
     def test_automation_sends_clip_name(self, mock_conn):
@@ -87,7 +87,7 @@ class TestRemoteScriptUsesClipName:
         intro, chorus = _Clip("Intro"), _Clip("Chorus")
         rs = _make_rs([intro, chorus])
 
-        rs._set_arrangement_clip_property(0, 0, "muted", True, "Chorus")
+        rs._set_clip_properties(0, 0, {"muted": True}, arrangement=True, clip_name="Chorus")
 
         assert chorus.muted is True
         assert intro.muted is False
