@@ -322,6 +322,44 @@ def _track_target_index(track_index: int, track_type: str = "track") -> int:
     return _to_zero_based(track_index, "track_index")
 
 
+def _session_info_one_based(info: Dict[str, Any]) -> Dict[str, Any]:
+    """Copy of a raw get_session_info reply with 1-based track numbers.
+
+    The Remote Script numbers tracks from 0 internally; every tool takes
+    1-based numbers, so the listing the agent reads must match them.
+    """
+    out = dict(info)
+    tracks = []
+    for t in info.get("tracks", []) or []:
+        t = dict(t)
+        if isinstance(t.get("index"), int):
+            t["index"] = t["index"] + 1
+        if isinstance(t.get("group_index"), int):
+            t["group_index"] = t["group_index"] + 1
+        tracks.append(t)
+    out["tracks"] = tracks
+    returns = []
+    for r in info.get("return_tracks", []) or []:
+        r = dict(r)
+        if isinstance(r.get("index"), int):
+            r["index"] = r["index"] + 1
+        returns.append(r)
+    out["return_tracks"] = returns
+    return out
+
+
+def _target_label(track_index: int, track_type: str = "track") -> str:
+    """How a reply names its target: 'track 3', 'return C' or 'the master'."""
+    track_type = (track_type or "track").lower()
+    if track_type == "master":
+        return "the master"
+    if track_type == "return":
+        if 1 <= track_index <= 26:
+            return f"return {chr(ord('A') + track_index - 1)}"
+        return f"return {track_index}"
+    return f"track {track_index}"
+
+
 # Parameter normalization utilities
 
 
@@ -506,7 +544,7 @@ def get_session_info(ctx: Context) -> str:
     try:
         ableton = get_ableton_connection()
         result = ableton.send_command("get_session_info")
-        return json.dumps(result, indent=2)
+        return json.dumps(_session_info_one_based(result), indent=2)
     except Exception as e:
         logger.error(f"Error getting session info from Ableton: {str(e)}")
         return f"Error getting session info: {str(e)}"
@@ -1176,10 +1214,10 @@ def load_instrument_or_effect(ctx: Context, track_index: int, uri: str, track_ty
         if result.get("loaded", False):
             new_devices = result.get("new_devices", [])
             if new_devices:
-                return f"Loaded instrument with URI '{uri}' on track {track_index}. New devices: {', '.join(new_devices)}"
+                return f"Loaded instrument with URI '{uri}' on {_target_label(track_index, track_type)}. New devices: {', '.join(new_devices)}"
             else:
                 devices = result.get("devices_after", [])
-                return f"Loaded instrument with URI '{uri}' on track {track_index}. Devices on track: {', '.join(devices)}"
+                return f"Loaded instrument with URI '{uri}' on {_target_label(track_index, track_type)}. Devices on track: {', '.join(devices)}"
         else:
             return f"Error: Live did not load the item with URI '{uri}'"
     except Exception as e:
@@ -1380,13 +1418,112 @@ def set_time_signature(ctx: Context, numerator: int = 4, denominator: int = 4) -
         return f"Error setting time signature: {str(e)}"
 
 
+def _undo_snapshot(ableton: "AbletonConnection") -> Dict[str, Any] | None:
+    """Cheap picture of the set, so undo/redo can say what they changed.
+
+    Live doesn't expose undo history names, so this compares transport
+    state, the track/return/scene lists and the mixer before and after.
+    """
+    try:
+        transport = ableton.send_command("get_transport_state")
+        info = ableton.send_command("get_session_info")
+    except Exception as e:  # never let the snapshot block the undo itself
+        logger.warning(f"Undo snapshot failed: {e}")
+        return None
+    return {"transport": transport or {}, "info": info or {}}
+
+
+_UNDO_TRANSPORT_FIELDS = [
+    ("tempo", "tempo"),
+    ("metronome", "metronome"),
+    ("loop_enabled", "arrangement loop"),
+    ("launch_quantization", "launch quantization"),
+    ("arrangement_record", "arrangement record"),
+    ("session_record", "session record"),
+    ("arrangement_overdub", "overdub"),
+    ("session_automation_record", "automation arm"),
+]
+
+
+def _describe_undo_changes(before: Dict[str, Any] | None,
+                           after: Dict[str, Any] | None) -> List[str]:
+    """Human-readable differences between two _undo_snapshot results."""
+    if not before or not after:
+        return []
+    changes: List[str] = []
+    bt, at = before.get("transport", {}), after.get("transport", {})
+    for key, label in _UNDO_TRANSPORT_FIELDS:
+        if key in bt and key in at and bt[key] != at[key]:
+            changes.append(f"{label} {bt[key]} -> {at[key]}")
+    bsig = (bt.get("signature_numerator"), bt.get("signature_denominator"))
+    asig = (at.get("signature_numerator"), at.get("signature_denominator"))
+    if None not in bsig and None not in asig and bsig != asig:
+        changes.append(f"time signature {bsig[0]}/{bsig[1]} -> {asig[0]}/{asig[1]}")
+
+    bi, ai = before.get("info", {}), after.get("info", {})
+
+    def _names(tracks):
+        return [t.get("name") for t in tracks or []]
+
+    for key, label in (("tracks", "tracks"), ("return_tracks", "return tracks")):
+        bn, an = _names(bi.get(key)), _names(ai.get(key))
+        if bn == an:
+            continue
+        added = [n for n in an if n not in bn]
+        removed = [n for n in bn if n not in an]
+        if len(bn) != len(an) or added or removed:
+            parts = [f"{label} {len(bn)} -> {len(an)}"]
+            if added:
+                parts.append("added " + ", ".join(repr(n) for n in added))
+            if removed:
+                parts.append("removed " + ", ".join(repr(n) for n in removed))
+            changes.append("; ".join(parts))
+        else:
+            changes.append(f"{label} renamed or reordered")
+    if bi.get("scene_count") != ai.get("scene_count") and "scene_count" in bi:
+        changes.append(f"scenes {bi.get('scene_count')} -> {ai.get('scene_count')}")
+
+    # Per-track switches, matched by position only when the list is unchanged.
+    btr, atr = bi.get("tracks") or [], ai.get("tracks") or []
+    if _names(btr) == _names(atr):
+        for i, (b, a) in enumerate(zip(btr, atr), start=1):
+            for key in ("mute", "solo", "arm"):
+                if b.get(key) != a.get(key) and a.get(key) is not None:
+                    changes.append(f"track {i} '{a.get('name')}' {key} {b.get(key)} -> {a.get(key)}")
+    bm = (bi.get("master_track") or {}).get("volume_display")
+    am = (ai.get("master_track") or {}).get("volume_display")
+    if bm is not None and am is not None and bm != am:
+        changes.append(f"master volume {bm} -> {am}")
+    return changes
+
+
+def _undo_or_redo(verb: str, send) -> str:
+    """Run send(ableton) (the undo or redo) between two snapshots."""
+    ableton = get_ableton_connection()
+    before = _undo_snapshot(ableton)
+    result = send(ableton) or {}
+    after = _undo_snapshot(ableton)
+    changes = _describe_undo_changes(before, after)
+    if changes:
+        what = "Changed: " + "; ".join(changes) + "."
+    elif before is None or after is None:
+        what = "Couldn't read the set to say what changed."
+    else:
+        what = ("No change seen in transport, tracks, scenes or mixer; it was "
+                "probably a clip, note or device edit.")
+    return (f"{verb}. {what} More undo available: {result.get('can_undo')}, "
+            f"redo available: {result.get('can_redo')}.")
+
+
 @tool()
 def undo(ctx: Context) -> str:
-    """Undo the last change in Live (same as Cmd/Ctrl+Z)."""
+    """Undo the last change in Live (same as Cmd/Ctrl+Z).
+
+    The reply says what changed (transport, tracks, scenes, mixer) when it
+    can see it; clip, note and device edits are reported as not visible.
+    """
     try:
-        ableton = get_ableton_connection()
-        result = ableton.send_command("undo")
-        return f"Undone. More undo available: {result.get('can_undo')}"
+        return _undo_or_redo("Undone", lambda a: a.send_command("undo"))
     except Exception as e:
         logger.error(f"Error undoing: {str(e)}")
         return f"Error undoing: {str(e)}"
@@ -1394,11 +1531,9 @@ def undo(ctx: Context) -> str:
 
 @tool()
 def redo(ctx: Context) -> str:
-    """Redo the last undone change in Live."""
+    """Redo the last undone change in Live. The reply says what changed."""
     try:
-        ableton = get_ableton_connection()
-        result = ableton.send_command("redo")
-        return f"Redone. More redo available: {result.get('can_redo')}"
+        return _undo_or_redo("Redone", lambda a: a.send_command("redo"))
     except Exception as e:
         logger.error(f"Error redoing: {str(e)}")
         return f"Error redoing: {str(e)}"
@@ -1779,8 +1914,8 @@ def load_external_plugin(
 
         if result.get("loaded", False):
             return (
-                "Loaded external plugin '{0}' on track {1} (matched '{2}')."
-            ).format(chosen.get("name", "?"), track_index, plugin_name)
+                "Loaded external plugin '{0}' on {1} (matched '{2}')."
+            ).format(chosen.get("name", "?"), _target_label(track_index, track_type), plugin_name)
         return "Error: Live did not load external plugin '{0}'.".format(chosen.get("name", "?"))
     except Exception as e:
         logger.error(f"Error loading external plugin: {str(e)}")
@@ -1855,8 +1990,8 @@ def load_serum_preset(ctx: Context, track_index: int, preset: str,
         })
         if not result.get("loaded", False):
             return "Error: Live did not load Serum preset '{0}'.".format(source.stem)
-        return "Loaded Serum preset '{0}' on track {1} (from {2}).".format(
-            source.stem, track_index, source)
+        return "Loaded Serum preset '{0}' on {1} (from {2}).".format(
+            source.stem, _target_label(track_index, track_type), source)
     except Exception as e:
         logger.error(f"Error loading Serum preset: {str(e)}")
         return f"Error loading Serum preset: {str(e)}"
@@ -1941,7 +2076,7 @@ def load_device(
         if not result.get("loaded"):
             return f"Error: Live did not load '{chosen.get('name')}'."
         devices = ", ".join(result.get("devices_after", []))
-        return f"Loaded {chosen.get('name')} on track {track_index}. Devices now: {devices}"
+        return f"Loaded {chosen.get('name')} on {_target_label(track_index, track_type)}. Devices now: {devices}"
     except Exception as e:
         logger.error(f"Error loading device: {str(e)}")
         return f"Error loading device: {str(e)}"
@@ -1995,7 +2130,7 @@ def load_drum_kit(ctx: Context, track_index: int, rack_uri: str, kit_path: str,
             "path": kit_path,
         })
         
-        return f"Loaded drum rack and kit '{loadable_kits[0].get('name')}' on track {track_index}"
+        return f"Loaded drum rack and kit '{loadable_kits[0].get('name')}' on {_target_label(track_index, track_type)}"
     except Exception as e:
         logger.error(f"Error loading drum kit: {str(e)}")
         return f"Error loading drum kit: {str(e)}"
@@ -2151,9 +2286,10 @@ def set_arrangement_loop(
             params["length"] = length
 
         result = ableton.send_command("set_arrangement_loop", params)
-        state = "enabled" if result.get("enabled") else "disabled"
-        ls = result.get("start", 0)
-        ll = result.get("length", 0)
+        # Report the requested state: Live's same-tick readback can be stale.
+        state = "enabled" if enabled else "disabled"
+        ls = start if start is not None else result.get("start", 0)
+        ll = length if length is not None else result.get("length", 0)
         return f"Loop {state}: {format_bar_range(ls, ls + ll, num, denom)}"
     except Exception as e:
         logger.error(f"Error setting arrangement loop: {str(e)}")

@@ -502,8 +502,7 @@ class AbletonMCP(ControlSurface):
         Returns (track, clip) tuple.
         """
         if track_index < 0 or track_index >= len(self._song.tracks):
-            raise IndexError("Track index {0} out of range (0-{1})".format(
-                track_index, len(self._song.tracks) - 1))
+            raise self._track_range_error(track_index)
 
         track = self._song.tracks[track_index]
         clips = track.arrangement_clips
@@ -588,6 +587,22 @@ class AbletonMCP(ControlSurface):
             })
         return sends
 
+    def _track_range_error(self, track_index, track_type="track"):
+        """IndexError for a bad track number, in the 1-based terms tools use."""
+        if track_type == "return":
+            count = len(self._song.return_tracks)
+            label, plural = "Return track", "return tracks"
+        else:
+            count = len(self._song.tracks)
+            label, plural = "Track", "tracks"
+        shown = track_index + 1
+        if count == 0:
+            return IndexError("{0} {1} out of range: the set has no {2}".format(label, shown, plural))
+        if count == 1:
+            plural = plural[:-1]
+        return IndexError("{0} {1} out of range: the set has {2} {3} (1-{2})".format(
+            label, shown, count, plural))
+
     def _resolve_mixer_track(self, track_index, track_type="track"):
         """Resolve a track for mixer operations.
 
@@ -600,14 +615,15 @@ class AbletonMCP(ControlSurface):
         if track_type == "return":
             returns = list(self._song.return_tracks)
             if track_index < 0 or track_index >= len(returns):
-                raise IndexError("Return track index {0} out of range (0-{1})".format(
-                    track_index, len(returns) - 1))
+                raise self._track_range_error(track_index, "return")
             return returns[track_index]
         if track_type == "track":
             all_tracks = list(self._song.tracks) + list(self._song.return_tracks)
             if track_index < 0 or track_index >= len(all_tracks):
-                raise IndexError("Track index {0} out of range (0-{1})".format(
-                    track_index, len(all_tracks) - 1))
+                raise IndexError(
+                    "Track {0} out of range: the set has {1} tracks and {2} return "
+                    "tracks (1-{3})".format(track_index + 1, len(self._song.tracks),
+                                            len(self._song.return_tracks), len(all_tracks)))
             return all_tracks[track_index]
         raise ValueError("track_type must be 'track', 'return' or 'master'")
 
@@ -655,7 +671,8 @@ class AbletonMCP(ControlSurface):
                 "tracks": tracks,
                 "return_tracks": return_tracks,
                 "master_track": {
-                    "name": "Master",
+                    # Live 12 calls it "Main"; use Live's name so every reply agrees.
+                    "name": self._safe(lambda: self._song.master_track.name, "Master"),
                     "volume": master.volume.value,
                     "volume_display": self._param_display(master.volume),
                     "panning": master.panning.value,
@@ -770,7 +787,7 @@ class AbletonMCP(ControlSurface):
         """Set the name of a track"""
         try:
             if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
+                raise self._track_range_error(track_index)
             
             # Set the name
             track = self._song.tracks[track_index]
@@ -883,7 +900,7 @@ class AbletonMCP(ControlSurface):
         """Create a new MIDI clip in the specified track and clip slot"""
         try:
             if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
+                raise self._track_range_error(track_index)
             
             track = self._song.tracks[track_index]
             
@@ -925,8 +942,7 @@ class AbletonMCP(ControlSurface):
             return self._resolve_arrangement_clip(track_index, clip_index, clip_name)
 
         if track_index < 0 or track_index >= len(self._song.tracks):
-            raise IndexError("Track index {0} out of range (0-{1})".format(
-                track_index, len(self._song.tracks) - 1))
+            raise self._track_range_error(track_index)
         track = self._song.tracks[track_index]
         slots = list(track.clip_slots)
 
@@ -1132,7 +1148,7 @@ class AbletonMCP(ControlSurface):
         """Set the name of a clip"""
         try:
             if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
+                raise self._track_range_error(track_index)
             
             track = self._song.tracks[track_index]
             
@@ -1172,7 +1188,7 @@ class AbletonMCP(ControlSurface):
         """Fire a clip"""
         try:
             if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
+                raise self._track_range_error(track_index)
             
             track = self._song.tracks[track_index]
             
@@ -1198,7 +1214,7 @@ class AbletonMCP(ControlSurface):
         """Stop a clip"""
         try:
             if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
+                raise self._track_range_error(track_index)
             
             track = self._song.tracks[track_index]
             
@@ -1404,8 +1420,7 @@ class AbletonMCP(ControlSurface):
 
     def _clip_slot(self, track_index, clip_index):
         if track_index < 0 or track_index >= len(self._song.tracks):
-            raise IndexError("Track index {0} out of range (0-{1})".format(
-                track_index, len(self._song.tracks) - 1))
+            raise self._track_range_error(track_index)
         track = self._song.tracks[track_index]
         slots = list(track.clip_slots)
         if clip_index < 0 or clip_index >= len(slots):
@@ -1683,7 +1698,7 @@ class AbletonMCP(ControlSurface):
                 tracks = list(enumerate(self._song.tracks))
             else:
                 if track_index < 0 or track_index >= len(self._song.tracks):
-                    raise IndexError("Track index out of range")
+                    raise self._track_range_error(track_index)
                 tracks = [(track_index, self._song.tracks[track_index])]
 
             for idx, track in tracks:
@@ -1741,10 +1756,14 @@ class AbletonMCP(ControlSurface):
                 self._song.loop_start = start
             if length is not None:
                 self._song.loop_length = length
+            # Live can return the old values when they're read back in the
+            # same tick they were set (seen live: loop=True read back False).
+            # Report what was applied; fall back to Live only for values
+            # this call left alone.
             return {
-                "enabled": self._song.loop,
-                "start": self._song.loop_start,
-                "length": self._song.loop_length,
+                "enabled": bool(enabled),
+                "start": start if start is not None else self._song.loop_start,
+                "length": length if length is not None else self._song.loop_length,
             }
         except Exception as e:
             self.log_message("Error setting arrangement loop: " + str(e))
@@ -1826,7 +1845,7 @@ class AbletonMCP(ControlSurface):
         """Create MIDI clip in arrangement."""
         try:
             if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
+                raise self._track_range_error(track_index)
             self._validate_clip_track(track_index)
             track = self._song.tracks[track_index]
             overlapped = self._check_overlap(track, position, length)
@@ -1849,7 +1868,7 @@ class AbletonMCP(ControlSurface):
         """Create audio clip in arrangement from file."""
         try:
             if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
+                raise self._track_range_error(track_index)
             self._validate_clip_track(track_index)
             track = self._song.tracks[track_index]
             track.create_audio_clip(file_path, position)
@@ -1868,7 +1887,7 @@ class AbletonMCP(ControlSurface):
         """Duplicate a session clip to arrangement."""
         try:
             if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index out of range")
+                raise self._track_range_error(track_index)
             track = self._song.tracks[track_index]
             if clip_index < 0 or clip_index >= len(track.clip_slots):
                 raise IndexError("Clip slot index out of range")
@@ -1927,11 +1946,11 @@ class AbletonMCP(ControlSurface):
                 self._song.view.follow_song = False
             elif action == "collapse_track":
                 if track_index < 0 or track_index >= len(self._song.tracks):
-                    raise IndexError("Track index out of range")
+                    raise self._track_range_error(track_index)
                 self._song.tracks[track_index].view.is_collapsed = True
             elif action == "expand_track":
                 if track_index < 0 or track_index >= len(self._song.tracks):
-                    raise IndexError("Track index out of range")
+                    raise self._track_range_error(track_index)
                 self._song.tracks[track_index].view.is_collapsed = False
             else:
                 raise ValueError("Unknown action: " + action)
@@ -2225,8 +2244,7 @@ class AbletonMCP(ControlSurface):
                     "Ableton must always have at least one track."
                 )
             if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index {0} out of range (0-{1})".format(
-                    track_index, len(self._song.tracks) - 1))
+                raise self._track_range_error(track_index)
             track = self._song.tracks[track_index]
             track_name = track.name
             children = []
@@ -2253,16 +2271,14 @@ class AbletonMCP(ControlSurface):
     def _delete_return_track(self, return_index):
         returns = list(self._song.return_tracks)
         if return_index < 0 or return_index >= len(returns):
-            raise IndexError("Return track index {0} out of range (0-{1})".format(
-                return_index, len(returns) - 1))
+            raise self._track_range_error(return_index, "return")
         name = returns[return_index].name
         self._song.delete_return_track(return_index)
         return {"deleted_return_track": name, "remaining_return_tracks": len(self._song.return_tracks)}
 
     def _duplicate_track(self, track_index):
         if track_index < 0 or track_index >= len(self._song.tracks):
-            raise IndexError("Track index {0} out of range (0-{1})".format(
-                track_index, len(self._song.tracks) - 1))
+            raise self._track_range_error(track_index)
         self._song.duplicate_track(track_index)
         # Live inserts the copy after the original (after a group's contents
         # for a group track).
@@ -2329,8 +2345,7 @@ class AbletonMCP(ControlSurface):
         """
         if track_type in (None, "", "track"):
             if track_index < 0 or track_index >= len(self._song.tracks):
-                raise IndexError("Track index {0} out of range (0-{1})".format(
-                    track_index, len(self._song.tracks) - 1))
+                raise self._track_range_error(track_index)
             return self._song.tracks[track_index]
         return self._resolve_mixer_track(track_index, track_type)
 
