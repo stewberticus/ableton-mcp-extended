@@ -8,7 +8,7 @@ Conventions: track, clip slot, scene, device and parameter numbers are
 1-based. Bar ranges are inclusive (bars 1-4 is four bars). Tools that
 act on mixer or devices take `track_type` = `track` / `return` / `master`.
 
-80 tools.
+81 tools.
 
 | Tool | Parameters | What it does |
 | --- | --- | --- |
@@ -51,6 +51,7 @@ act on mixer or devices take `track_type` = `track` / `return` / `master`.
 | `get_browser_items_at_path` | `path` | Get browser items at a specific path in Ableton's browser. |
 | `list_external_plugins` | `query=''`, `max_results=50`, `refresh_cache=False` | List discovered external plugins (VST/AU), optionally filtered by name query. |
 | `load_external_plugin` | `track_index`, `plugin_name`, `exact_match=False`, `refresh_cache=False`, `track_type='track'` | Load an external plugin onto a track by plugin name (no URI required). |
+| `load_serum_preset` | `track_index`, `preset`, `track_type='track'` | Load a Serum 2 preset (.SerumPreset) onto a track as a ready-to-play Serum 2 device. |
 | `load_device` | `track_index`, `name`, `category='auto'`, `track_type='track'` | Load one of Live's built-in devices by name, e.g. "Operator", "Wavetable", "Drift", "Reverb", "EQ Eight", "Compressor", "Arpeggiator". |
 | `load_drum_kit` | `track_index`, `rack_uri`, `kit_path`, `track_type='track'` | Load a drum rack and then load a specific drum kit into it. |
 | `get_arrangement_info` | `track_index=0` | Get arrangement clips and transport state. |
