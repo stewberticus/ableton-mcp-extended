@@ -396,6 +396,9 @@ class AbletonMCP(ControlSurface):
                 track_type=g(p, "track_type", "track")),
             "get_drum_pad_info": lambda p: self._get_drum_pad_info(
                 g(p, "track_index", 0), g(p, "device_index", 0), track_type=g(p, "track_type", "track")),
+            "set_simpler_slices": lambda p: self._set_simpler_slices(
+                g(p, "track_index", 0), g(p, "device_index", 0), g(p, "slice_frames", []),
+                file_path=g(p, "file_path"), track_type=g(p, "track_type", "track")),
         }
 
     def _process_command(self, command):
@@ -2165,6 +2168,44 @@ class AbletonMCP(ControlSurface):
         except Exception as e:
             self.log_message("Error getting chain info: " + str(e))
             raise
+
+    def _set_simpler_slices(self, track_index, device_index, slice_frames, file_path=None,
+                            track_type="track"):
+        """Put a Simpler in Slice mode with manual slices at the given sample frames.
+
+        file_path (optional) replaces the Simpler's sample first, when this Live
+        version's API offers SimplerDevice.replace_sample. MIDI notes then trigger
+        slices upward from C1 (note 36) in slice order.
+        """
+        import Live
+        track, device = self._resolve_device(track_index, device_index, track_type=track_type)
+        if getattr(device, "class_name", "") != "OriginalSimpler":
+            raise ValueError("Device '{0}' is not a Simpler (class {1})".format(
+                device.name, getattr(device, "class_name", "?")))
+        if file_path:
+            if not hasattr(device, "replace_sample"):
+                raise ValueError("This Live version has no SimplerDevice.replace_sample; "
+                                 "load the sample through the browser instead")
+            device.replace_sample(file_path)
+        sample = device.sample
+        if sample is None:
+            raise ValueError("Simpler '{0}' has no sample loaded".format(device.name))
+        device.playback_mode = Live.SimplerDevice.PlaybackMode.slicing
+        sample.slicing_style = Live.Sample.SlicingStyle.manual
+        sample.clear_slices()
+        length = sample.length
+        for f in sorted(set(int(x) for x in slice_frames)):
+            if 0 <= f < length:
+                sample.insert_slice(f)
+        return {
+            "track_name": track.name,
+            "device_name": device.name,
+            "sample_file": getattr(sample, "file_path", None),
+            "sample_length_frames": length,
+            "playback_mode": str(device.playback_mode),
+            "slicing_style": str(sample.slicing_style),
+            "slices": [int(x) for x in sample.slices],
+        }
 
     def _get_drum_pad_info(self, track_index, device_index, track_type="track"):
         """Get drum pad info for a Drum Rack."""

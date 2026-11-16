@@ -3256,6 +3256,39 @@ def get_drum_pad_info(ctx: Context, track_index: int, device_index: int = 1,
 
 
 @tool()
+def set_simpler_slices(ctx: Context, track_index: int, slice_frames: list[int], device_index: int = 1,
+                       file_path: str = "", track_type: str = "track") -> str:
+    """Put a Simpler in Slice mode with manual slices at the given sample frames.
+
+    MIDI notes then play the slices in order upward from C1 (note 36): slice 1 = C1,
+    slice 2 = C#1, ... Use it to play chopped samples from a MIDI track: join the
+    chops into one file, load it into Simpler (load_browser_item with the file's
+    browser URI on an empty MIDI track), then pass each chop's start frame here.
+
+    Parameters:
+    - track_index: Track number (1-based).
+    - device_index: Device number of the Simpler (1-based, default 1).
+    - slice_frames: Slice start positions in samples (frames) of the loaded sample.
+    - file_path: Optional sample to swap in first (needs Live's replace_sample API).
+    - track_type: "track" (default), "return" or "master".
+    """
+    try:
+        ableton = get_ableton_connection()
+        result = ableton.send_command("set_simpler_slices", {
+            "track_index": _track_target_index(track_index, track_type), "track_type": track_type,
+            "device_index": _to_zero_based(device_index, "device_index"),
+            "slice_frames": [int(f) for f in slice_frames],
+            "file_path": file_path or None,
+        })
+        return "{0} on '{1}': slice mode, {2} slices at frames {3} (sample {4})".format(
+            result.get("device_name"), result.get("track_name"), len(result.get("slices", [])),
+            result.get("slices"), result.get("sample_file"))
+    except Exception as e:
+        logger.error(f"Error setting Simpler slices: {str(e)}")
+        return f"Error setting Simpler slices: {str(e)}"
+
+
+@tool()
 def delete_device(
     ctx: Context,
     track_index: int,
